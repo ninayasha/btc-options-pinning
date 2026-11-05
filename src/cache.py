@@ -39,11 +39,11 @@ class TTLCache:
             self._data[key] = (val, expire_at, now)
             return val
 
-    def set(self, key: str, value: Any, ttl: Optional[float] = None) -> None:
-        """Stores a value in cache with specified TTL in seconds."""
+    def set(self, key: str, value: Any, ttl: Optional[float] = None, ttl_seconds: Optional[float] = None) -> None:
+        """Stores a value in cache with specified TTL in seconds (accepts ttl or ttl_seconds)."""
         now = time.monotonic()
-        expire_ttl = ttl if ttl is not None else self.default_ttl
-        expire_at = now + expire_ttl
+        effective_ttl = ttl if ttl is not None else (ttl_seconds if ttl_seconds is not None else self.default_ttl)
+        expire_at = now + effective_ttl
 
         with self._lock:
             # Enforce maxsize limit by evicting expired or oldest items
