@@ -140,11 +140,11 @@ def ensure_backup_folder(access_token: str) -> Optional[str]:
         return None
 
 
-def backup_database(db_file_path: Optional[Path] = None) -> Dict[str, Any]:
+def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = False) -> Dict[str, Any]:
     """
     Backs up the SQLite database to Google Drive:
-    1. Keeps a master 'btc_pinning.db' updated in place
-    2. Keeps a timestamped archive copy 'btc_pinning_YYYYMMDD_HHMM.db'
+    1. Keeps a master 'btc_pinning.db' updated in place on every hourly run.
+    2. Keeps a timestamped archive copy 'btc_pinning_YYYYMMDD_HHMM.db' when create_archive=True (e.g. daily settlement).
     """
     target_path = Path(db_file_path) if db_file_path else DB_PATH
     if not target_path.exists():
@@ -211,24 +211,26 @@ def backup_database(db_file_path: Optional[Path] = None) -> Dict[str, Any]:
         if r_up.status_code not in (200, 201):
             return {"success": False, "error": f"Upload failed: {r_up.text}"}
 
-        # 2. Upload timestamped archive snapshot (e.g. btc_pinning_20261026_222500.db)
-        archive_name = f"btc_pinning_{now_bkk}.db"
-        archive_meta = {
-            "name": archive_name,
-            "parents": [folder_id],
-            "description": f"Historical Archive Snapshot {now_bkk}",
-        }
-        r_arch = httpx.post(
-            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-            headers=headers,
-            files={
-                "metadata": (None, json.dumps(archive_meta), "application/json; charset=UTF-8"),
-                "file": (archive_name, db_bytes, "application/x-sqlite3"),
-            },
-            timeout=30.0,
-        )
+        # 2. Upload timestamped archive snapshot only when requested (e.g. daily settlement)
+        archive_name = "none"
+        if create_archive:
+            archive_name = f"btc_pinning_{now_bkk}.db"
+            archive_meta = {
+                "name": archive_name,
+                "parents": [folder_id],
+                "description": f"Historical Archive Snapshot {now_bkk}",
+            }
+            r_arch = httpx.post(
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                headers=headers,
+                files={
+                    "metadata": (None, json.dumps(archive_meta), "application/json; charset=UTF-8"),
+                    "file": (archive_name, db_bytes, "application/x-sqlite3"),
+                },
+                timeout=30.0,
+            )
 
-        msg = f"Database successfully backed up to Google Drive ({action} master + archived {archive_name}, {size_kb} KB)"
+        msg = f"Database successfully backed up to Google Drive ({action} master, archive: {archive_name}, {size_kb} KB)"
         logger.info(msg)
         return {
             "success": True,
@@ -292,7 +294,7 @@ def restore_database_if_missing(db_file_path: Optional[Path] = None, force: bool
                 local_snapshots = 0
 
         # Needs restore if forced, missing, local has fewer than 10 snapshots, or local is smaller than 80% of remote
-        needs_restore = force or (not target_path.exists()) or (local_snapshots < 10) or (local_size < remote_size * 0.8) or bool(os.getenv("RENDER"))
+        needs_restore = force or (not target_path.exists()) or (local_snapshots < 10) or (local_size < remote_size * 0.8) or bool(os.getenv("RENDER")) or bool(os.getenv("SPACE_ID"))
 
         if not needs_restore:
             return {"restored": False, "reason": f"Local database is already healthy ({local_snapshots} snapshots, {round(local_size/1024, 1)} KB)."}
