@@ -21,6 +21,6 @@ if __name__ == "__main__":
             print("Database empty. Importing historical data...")
             import_historical_data()
 
-    port = int(os.environ.get("PORT", 7860 if os.environ.get("SPACE_ID") else 8000))
+    port = int(os.environ.get("PORT", 7860 if os.environ.get("SPACE_ID") else 8088))
     print(f"Starting BTC Options Pinning Dashboard on port {port} ...")
     uvicorn.run("web.app:app", host="0.0.0.0", port=port, reload=False)
