@@ -115,8 +115,7 @@ def bs_price(spot: float, strike: float, t_years: float, iv_decimal: float, is_c
 
 def calculate_max_pain(strikes_oi: List[Dict[str, float]]) -> float:
     """
-    Calculate Max Pain strike.
-    strikes_oi: list of dicts with 'strike', 'call_oi', 'put_oi'.
+    Calculate Max Pain strike in O(N log N) / O(N) using running prefix sums.
     Loss to option buyers at price S:
     Loss(S) = sum_i(call_oi_i * max(0, S - K_i)) + sum_i(put_oi_i * max(0, K_i - S))
     Max pain is S in {K_i} that minimizes total payout / buyer loss.
@@ -124,27 +123,34 @@ def calculate_max_pain(strikes_oi: List[Dict[str, float]]) -> float:
     if not strikes_oi:
         return 0.0
 
-    strikes = [item["strike"] for item in strikes_oi]
-    min_loss = float("inf")
-    max_pain_strike = strikes[0]
+    sorted_items = sorted(strikes_oi, key=lambda x: x["strike"])
+    n = len(sorted_items)
+    if n == 1:
+        return sorted_items[0]["strike"]
 
-    for candidate in strikes:
-        total_loss = 0.0
-        for item in strikes_oi:
-            k = item["strike"]
-            c_oi = item.get("call_oi", 0.0)
-            p_oi = item.get("put_oi", 0.0)
+    strikes = [x["strike"] for x in sorted_items]
+    call_ois = [float(x.get("call_oi", 0.0) or 0.0) for x in sorted_items]
+    put_ois = [float(x.get("put_oi", 0.0) or 0.0) for x in sorted_items]
 
-            if candidate > k:
-                total_loss += c_oi * (candidate - k)
-            elif candidate < k:
-                total_loss += p_oi * (k - candidate)
+    # Initial loss at candidate S = strikes[0]
+    s0 = strikes[0]
+    cur_loss = sum(put_ois[i] * (strikes[i] - s0) for i in range(n))
+    min_loss = cur_loss
+    best_strike = s0
 
-        if total_loss < min_loss:
-            min_loss = total_loss
-            max_pain_strike = candidate
+    cum_call = 0.0
+    rem_put = sum(put_ois)
 
-    return max_pain_strike
+    for i in range(1, n):
+        delta = strikes[i] - strikes[i - 1]
+        cum_call += call_ois[i - 1]
+        rem_put -= put_ois[i - 1]
+        cur_loss += delta * (cum_call - rem_put)
+        if cur_loss < min_loss:
+            min_loss = cur_loss
+            best_strike = strikes[i]
+
+    return best_strike
 
 
 def get_top_strikes(strikes_oi: List[Dict[str, float]]) -> Dict[str, any]:
