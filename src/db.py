@@ -267,6 +267,7 @@ def init_db():
         # Helpful indices
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_expiry ON snapshots(expiry_date, snapshot_time_bkk)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_oi_by_strike_snap ON oi_by_strike(snapshot_time_bkk, expiry_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_oi_by_strike_exp_snap ON oi_by_strike(expiry_date, snapshot_time_bkk, strike)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_big_expiries_snap ON big_expiries(snapshot_time_bkk)")
 
