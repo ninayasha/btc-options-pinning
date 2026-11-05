@@ -300,7 +300,7 @@ def run_settlement(target_date_str: Optional[str] = None) -> Dict[str, Any]:
     # Auto-backup database to Google Drive after settlement
     try:
         from src.gdrive_backup import backup_database
-        backup_database()
+        backup_database(create_archive=True)
     except Exception as e:
         logger.warning(f"Google Drive auto-backup error after settlement: {e}")
 
