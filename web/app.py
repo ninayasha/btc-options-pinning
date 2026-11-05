@@ -22,7 +22,10 @@ from src.settlement_analytics import (
     get_full_settlement_history,
 )
 
+from starlette.middleware.gzip import GZipMiddleware
+
 app = FastAPI(title="BTC Options Pinning Dashboard", description="Deribit BTC Options Pinning & Statistics")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Mount templates and static
 TEMPLATES_DIR = BASE_DIR / "web" / "templates"
@@ -374,9 +377,8 @@ def api_timeline(expiry_date: Optional[str] = None, scope: str = "active"):
             # Fetch ALL strikes for this expiry in ONE single query (no per-snapshot N+1 loop)
             cur_all_st = conn.execute(
                 """
-                SELECT strike, call_oi, put_oi, total_oi, call_oi_usd, put_oi_usd,
+                SELECT strike, call_oi, put_oi,
                        call_volume_24h, put_volume_24h,
-                       ROUND(COALESCE(call_volume_24h, 0) + COALESCE(put_volume_24h, 0), 2) as total_volume_24h,
                        call_gex_usd, put_gex_usd, net_gex_usd, call_iv, put_iv,
                        snapshot_time_bkk
                 FROM oi_by_strike
@@ -423,12 +425,8 @@ def api_timeline(expiry_date: Optional[str] = None, scope: str = "active"):
                 SELECT snapshot_time_bkk, strike,
                        ROUND(SUM(call_oi), 2) as call_oi,
                        ROUND(SUM(put_oi), 2) as put_oi,
-                       ROUND(SUM(total_oi), 2) as total_oi,
-                       ROUND(SUM(call_oi_usd), 2) as call_oi_usd,
-                       ROUND(SUM(put_oi_usd), 2) as put_oi_usd,
                        ROUND(SUM(call_volume_24h), 2) as call_volume_24h,
                        ROUND(SUM(put_volume_24h), 2) as put_volume_24h,
-                       ROUND(SUM(COALESCE(call_volume_24h, 0) + COALESCE(put_volume_24h, 0)), 2) as total_volume_24h,
                        ROUND(SUM(call_gex_usd), 2) as call_gex_usd,
                        ROUND(SUM(put_gex_usd), 2) as put_gex_usd,
                        ROUND(SUM(net_gex_usd), 2) as net_gex_usd,
@@ -454,9 +452,9 @@ def api_timeline(expiry_date: Optional[str] = None, scope: str = "active"):
                 if not agg_strikes:
                     continue
 
-                tot_call = sum(st["call_oi"] for st in agg_strikes)
-                tot_put = sum(st["put_oi"] for st in agg_strikes)
-                tot_oi = sum(st["total_oi"] for st in agg_strikes)
+                tot_call = round(sum(st["call_oi"] for st in agg_strikes), 2)
+                tot_put = round(sum(st["put_oi"] for st in agg_strikes), 2)
+                tot_oi = round(tot_call + tot_put, 2)
                 tot_net_gex = sum(st["net_gex_usd"] or 0 for st in agg_strikes)
 
                 tot_c_vol = round(sum(st.get("call_volume_24h") or 0.0 for st in agg_strikes), 2)
@@ -505,7 +503,7 @@ def api_timeline(expiry_date: Optional[str] = None, scope: str = "active"):
     result = {"expiries": expiries, "groups": groups_meta, "snapshots": snaps}
     try:
         from src.cache import memory_cache
-        memory_cache.set(cache_key, result, ttl_seconds=60)
+        memory_cache.set(cache_key, result, ttl=120.0)
     except Exception:
         pass
     return result
