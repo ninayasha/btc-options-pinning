@@ -331,7 +331,7 @@
   <!-- ====================================================================== -->
   <!-- 3. DUAL CONTINUOUS CHARTS: TOP OI + BOTTOM GEX VERTICALLY ALIGNED -->
   <!-- ====================================================================== -->
-  <div class="mt-3 space-y-4">
+  <div id="dualChartsWrapper" class="mt-3 space-y-4 transition-opacity duration-150">
     <!-- Panel 1: Top Open Interest & IV Chart (Call Green / Put Red) -->
     <div>
       <div class="text-xs font-bold text-slate-300 mb-1 flex justify-between">
@@ -789,6 +789,7 @@
   let activeGroups = {};
   let activeExpiriesList = [];
   let currentTargetKey = 'group_today';
+  const clientTimelineCache = {};
 
   // Server-rendered initial snapshot for INSTANT zero-delay chart rendering
   {% if snap %}
@@ -885,6 +886,13 @@
         html += `<option value="${e.expiry_date}">${e.expiry_date} (${tag})${metricText}</option>`;
       });
       html += '</optgroup>';
+    }
+
+    if (curVal && !curVal.startsWith('group_') && curVal !== 'all' && curVal !== '__archive__') {
+      const exists = (activeExpiriesList || []).some(e => e.expiry_date === curVal);
+      if (!exists) {
+        html += `<optgroup label="🗄️ สัญญาย้อนหลัง (Archive)"><option value="${curVal}">${curVal} (Archive)</option></optgroup>`;
+      }
     }
 
     html += '<option value="__archive__">🗄️ ดูประวัติ Expiry ที่หมดอายุแล้วทั้งหมด (Archive) →</option>';
@@ -1193,15 +1201,39 @@
     });
   }
 
-  // Load timeline data
+  // Load timeline data with Instant Client Cache & Sub-second Response
   async function loadTimeline(expiryDate = null) {
     const target = expiryDate || currentTargetKey || 'group_today';
     currentTargetKey = target;
-    let url = `/api/timeline?scope=active&expiry_date=${encodeURIComponent(target)}`;
+
+    const wrapper = document.getElementById('dualChartsWrapper');
+
+    // 1. Instant cache hit (0ms display)
+    if (clientTimelineCache[target]) {
+      const data = clientTimelineCache[target];
+      timelineData = data.snapshots || [];
+      if (data.groups) activeGroups = data.groups;
+      if (data.expiries) activeExpiriesList = data.expiries;
+      updateExpiryPicker();
+      const slider = document.getElementById('timelineSlider');
+      if (timelineData.length > 0) {
+        slider.min = 0;
+        slider.max = timelineData.length - 1;
+        currentIndex = timelineData.length - 1;
+        slider.value = currentIndex;
+        renderFrame(currentIndex);
+      }
+      return;
+    }
+
+    if (wrapper) wrapper.style.opacity = '0.6';
+    const scopeParam = (target.startsWith('group_') || target === 'all') ? 'active' : 'all';
+    let url = `/api/timeline?scope=${scopeParam}&expiry_date=${encodeURIComponent(target)}`;
 
     try {
       const res = await fetch(url);
       const data = await res.json();
+      clientTimelineCache[target] = data; // Cache locally
       timelineData = data.snapshots || [];
 
       if (data.groups) activeGroups = data.groups;
@@ -1219,6 +1251,8 @@
       }
     } catch (err) {
       console.error('Failed to load timeline:', err);
+    } finally {
+      if (wrapper) wrapper.style.opacity = '1.0';
     }
   }
 
