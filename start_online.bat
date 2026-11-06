@@ -1,14 +1,19 @@
 @echo off
-title BTC Options Pinning Dashboard (Online)
+title BTC Options Pinning Dashboard (Online - Ngrok Static Domain)
 echo ========================================================
-echo  Starting BTC Options Pinning Dashboard with Cloudflare
+echo  Starting BTC Options Pinning Dashboard (Ngrok Static)
+echo  Permanent URL: https://underuse-pamperer-dish.ngrok-free.dev
 echo ========================================================
 cd /d "%~dp0"
 set PYTHONPATH=.
 
-start "Web App Backend" .venv\Scripts\python.exe main.py
+start "Web App Backend (Port 8088)" .venv\Scripts\python.exe main.py
 timeout /t 3 /nobreak >nul
-start "Cloudflare Tunnel" cloudflared.exe tunnel --url http://127.0.0.1:8088
+start "Ngrok Tunnel (Permanent Domain)" ngrok.exe http 8088 --url underuse-pamperer-dish.ngrok-free.dev
 echo.
-echo System started! Check the Cloudflare window for your public HTTPS link.
+echo ========================================================
+echo  System started successfully!
+echo  Your permanent URL:
+echo  https://underuse-pamperer-dish.ngrok-free.dev
+echo ========================================================
 pause
