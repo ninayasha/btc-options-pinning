@@ -251,11 +251,6 @@ def api_timeline(expiry_date: Optional[str] = None, scope: str = "active"):
             # If all upcoming are somehow empty, fallback to last 3 expiries
             if not expiries and all_exp:
                 expiries = all_exp[-3:]
-            # If a specific single expiry was requested, ensure it's in expiries so picker has it
-            if expiry_date and not (expiry_date.startswith("group_") or expiry_date in ("all", "all_expiries")):
-                match_exp = [e for e in all_exp if e["expiry_date"] == expiry_date]
-                if match_exp and match_exp[0] not in expiries:
-                    expiries = match_exp + expiries
         elif scope == "expired":
             expiries = [e for e in all_exp if not is_expiry_active(e["expiry_date"])]
         else:
@@ -646,8 +641,8 @@ def page_latest(request: Request, expiry_date: Optional[str] = None):
         now_bkk = datetime.now(BKK_TZ)
         today_str = now_bkk.strftime("%Y-%m-%d")
 
-        # 1. Latest snapshot (nearest active unexpired target by default, or specific expiry if requested)
-        if expiry_date and expiry_date != "all":
+        # 1. Latest snapshot (nearest active unexpired target by default, or specific expiry if requested and active)
+        if expiry_date and expiry_date != "all" and is_expiry_active(expiry_date):
             cur = conn.execute(
                 "SELECT * FROM snapshots WHERE expiry_date = ? ORDER BY snapshot_time_bkk DESC LIMIT 1",
                 (expiry_date,),
@@ -716,9 +711,31 @@ def page_latest(request: Request, expiry_date: Optional[str] = None):
         cur_logs = conn.execute("SELECT * FROM execution_logs ORDER BY run_time_bkk DESC LIMIT 15")
         logs = [dict(r) for r in cur_logs.fetchall()]
 
-        # 5. Distinct Expiry Dates
-        cur_dates = conn.execute("SELECT DISTINCT expiry_date FROM snapshots ORDER BY expiry_date DESC")
-        all_dates = [r["expiry_date"] for r in cur_dates.fetchall()]
+        # 5. Distinct Expiry Dates & Active Expiries
+        cur_active = conn.execute("""
+            SELECT s.expiry_date, s.expiry_type, COUNT(*) as snap_count,
+                   MAX(s.snapshot_time_bkk) as last_snap,
+                   (
+                       SELECT s2.total_oi
+                       FROM snapshots s2
+                       WHERE s2.expiry_date = s.expiry_date
+                       ORDER BY s2.snapshot_time_bkk DESC
+                       LIMIT 1
+                   ) as latest_total_oi,
+                   (
+                       SELECT s2.total_volume
+                       FROM snapshots s2
+                       WHERE s2.expiry_date = s.expiry_date
+                       ORDER BY s2.snapshot_time_bkk DESC
+                       LIMIT 1
+                   ) as latest_total_volume
+            FROM snapshots s
+            GROUP BY s.expiry_date
+            ORDER BY s.expiry_date ASC
+        """)
+        all_exp_rows = [dict(r) for r in cur_active.fetchall()]
+        active_expiries = [e for e in all_exp_rows if is_expiry_active(e["expiry_date"])]
+        all_dates = [e["expiry_date"] for e in all_exp_rows]
 
     overall_stats = compute_stats_for_subset(all_results)
     daily_stats = compute_stats_for_subset([r for r in all_results if r.get("expiry_type") == "daily"])
@@ -760,6 +777,7 @@ def page_latest(request: Request, expiry_date: Optional[str] = None):
             "total_settled_count": len(all_results),
             "events": events_list,
             "logs": logs,
+            "active_expiries": active_expiries,
             "all_dates": all_dates,
             "overall_stats": overall_stats,
             "daily_stats": daily_stats,
@@ -777,11 +795,13 @@ def page_latest(request: Request, expiry_date: Optional[str] = None):
 @app.get("/oi_change", response_class=HTMLResponse)
 def page_oi_change(request: Request, expiry_date: Optional[str] = None):
     with get_db() as conn:
-        # Get all distinct expiry dates
+        # Get distinct expiry dates
         cur_dates = conn.execute("SELECT DISTINCT expiry_date FROM snapshots ORDER BY expiry_date DESC")
         all_dates = [r["expiry_date"] for r in cur_dates.fetchall()]
+        active_dates = [d for d in all_dates if is_expiry_active(d)]
+        expired_dates = [d for d in all_dates if not is_expiry_active(d)]
 
-        selected_date = expiry_date or (all_dates[0] if all_dates else None)
+        selected_date = expiry_date or (active_dates[-1] if active_dates else (all_dates[0] if all_dates else None))
 
         snaps = []
         if selected_date:
@@ -796,6 +816,8 @@ def page_oi_change(request: Request, expiry_date: Optional[str] = None):
         name="oi_change.html",
         context={
             "page": "oi_change",
+            "active_dates": active_dates,
+            "expired_dates": expired_dates,
             "all_dates": all_dates,
             "selected_date": selected_date,
             "snaps": snaps,
