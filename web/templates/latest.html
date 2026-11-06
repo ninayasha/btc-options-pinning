@@ -241,7 +241,15 @@
             <option value="group_monthly">🗓️ เดือนนี้ (รวบทั้งเดือน)</option>
             <option value="all">🌐 รวมทุก Expiry ในอนาคต (All Aggregated)</option>
           </optgroup>
-          {% if snap %}
+          {% if active_expiries %}
+          <optgroup label="🎯 สัญญารายวัน/เดี่ยว (Single Expiries)">
+            {% for e in active_expiries %}
+            <option value="{{ e.expiry_date }}" {% if snap and snap.expiry_date == e.expiry_date %}selected{% endif %}>
+              {{ e.expiry_date }} ({% if e.expiry_type == 'monthly' %}สิ้นเดือน{% elif e.expiry_type == 'weekly' %}ศุกร์{% elif e.expiry_type == 'quarterly' %}ไตรมาส{% else %}รายวัน{% endif %}) • OI: {{ "{:,.0f}".format(e.latest_total_oi or 0) }} BTC
+            </option>
+            {% endfor %}
+          </optgroup>
+          {% elif snap %}
           <optgroup label="🎯 สัญญารายวัน/เดี่ยว (Single Expiries)">
             <option value="{{ snap.expiry_date }}">{{ snap.expiry_date }} ({{ snap.expiry_type or 'เป้าหมายหลัก' }})</option>
           </optgroup>
@@ -859,34 +867,42 @@
     });
     html += '</optgroup>';
 
-    // OptGroup 2: สัญญารายตัว (Single Expiries)
+    // OptGroup 2: สัญญารายตัว (Single Expiries - เฉพาะปัจจุบันและอนาคต)
     if (activeExpiriesList && activeExpiriesList.length > 0) {
-      html += '<optgroup label="🎯 สัญญารายวัน/เดี่ยว (Single Expiries)">';
-      activeExpiriesList.forEach(e => {
-        let tag = e.expiry_type || '';
-        if (e.expiry_date === '{{ snap.expiry_date }}') tag += ' • เป้าหมายหลัก';
-        else if (e.expiry_type === 'monthly') tag += ' • สิ้นเดือน';
-        else if (e.expiry_type === 'quarterly') tag += ' • ไตรมาส';
-        else if (e.expiry_type === 'weekly') tag += ' • ศุกร์';
+      const nowBKK = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Bangkok"}));
+      const padZero = (n) => String(n).padStart(2, '0');
+      const todayStr = `${nowBKK.getFullYear()}-${padZero(nowBKK.getMonth()+1)}-${padZero(nowBKK.getDate())}`;
+      const currentHour = nowBKK.getHours();
 
-        let metricText = '';
-        if (currentMetricView === 'volume') {
-          const vol = e.latest_total_volume || 0;
-          metricText = ` • Vol: ${Math.round(vol).toLocaleString()} BTC`;
-        } else {
-          const oi = e.latest_total_oi || 0;
-          metricText = ` • OI: ${Math.round(oi).toLocaleString()} BTC`;
-        }
-
-        html += `<option value="${e.expiry_date}">${e.expiry_date} (${tag})${metricText}</option>`;
+      // Only display active, unexpired expiries (today before 15:00 or future dates)
+      const activeList = activeExpiriesList.filter(e => {
+        if (!e.expiry_date) return false;
+        if (e.expiry_date < todayStr) return false;
+        if (e.expiry_date === todayStr && currentHour >= 15) return false;
+        return true;
       });
-      html += '</optgroup>';
-    }
 
-    if (curVal && !curVal.startsWith('group_') && curVal !== 'all' && curVal !== '__archive__') {
-      const exists = (activeExpiriesList || []).some(e => e.expiry_date === curVal);
-      if (!exists) {
-        html += `<optgroup label="🗄️ สัญญาย้อนหลัง (Archive)"><option value="${curVal}">${curVal} (Archive)</option></optgroup>`;
+      if (activeList.length > 0) {
+        html += '<optgroup label="🎯 สัญญารายวัน/เดี่ยว (Single Expiries)">';
+        activeList.forEach(e => {
+          let tag = e.expiry_type || '';
+          if (e.expiry_type === 'monthly') tag = 'สิ้นเดือน';
+          else if (e.expiry_type === 'quarterly') tag = 'ไตรมาส';
+          else if (e.expiry_type === 'weekly') tag = 'ศุกร์';
+          else if (!tag || tag === 'daily') tag = 'รายวัน';
+
+          let metricText = '';
+          if (currentMetricView === 'volume') {
+            const vol = e.latest_total_volume || 0;
+            metricText = ` • Vol: ${Math.round(vol).toLocaleString()} BTC`;
+          } else {
+            const oi = e.latest_total_oi || 0;
+            metricText = ` • OI: ${Math.round(oi).toLocaleString()} BTC`;
+          }
+
+          html += `<option value="${e.expiry_date}">${e.expiry_date} (${tag})${metricText}</option>`;
+        });
+        html += '</optgroup>';
       }
     }
 
@@ -1222,8 +1238,8 @@
     }
 
     if (wrapper) wrapper.style.opacity = '0.6';
-    const scopeParam = (target.startsWith('group_') || target === 'all') ? 'active' : 'all';
-    let url = `/api/timeline?scope=${scopeParam}&expiry_date=${encodeURIComponent(target)}`;
+    const scopeParam = 'active';
+    let url = `/api/timeline?scope=active&expiry_date=${encodeURIComponent(target)}`;
 
     try {
       const res = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' } });
