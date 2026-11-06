@@ -18,9 +18,20 @@
     <form method="get" action="/oi_change" class="flex items-center gap-2">
       <label for="expiry_date" class="text-xs text-slate-300 font-medium">เลือก Expiry:</label>
       <select name="expiry_date" id="expiry_date" onchange="this.form.submit()" class="bg-darkcard border border-darkborder text-slate-200 text-xs rounded px-3 py-1.5 focus:outline-none focus:border-emerald-500">
-        {% for d in all_dates %}
-          <option value="{{ d }}" {% if d == selected_date %}selected{% endif %}>{{ d }}</option>
-        {% endfor %}
+        {% if active_dates %}
+        <optgroup label="🎯 สัญญาปัจจุบันและอนาคต (Active)">
+          {% for d in active_dates %}
+            <option value="{{ d }}" {% if d == selected_date %}selected{% endif %}>{{ d }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+        {% if expired_dates %}
+        <optgroup label="🗄️ สัญญาย้อนหลัง (Archive)">
+          {% for d in expired_dates %}
+            <option value="{{ d }}" {% if d == selected_date %}selected{% endif %}>{{ d }} (Archive)</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
       </select>
     </form>
     <a href="/export/oi_by_strike.csv?expiry_date={{ selected_date }}" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-3 py-1.5 rounded border border-darkborder transition">
