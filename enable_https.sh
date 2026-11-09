@@ -7,16 +7,47 @@ echo "=========================================================="
 echo "  Setting up HTTPS / SSL for $DOMAIN                     "
 echo "=========================================================="
 
-# 1. Install Caddy (Production-grade automatic HTTPS reverse proxy)
+# 1. Install Caddy
 echo "📦 Installing Caddy..."
-sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-curl -1sLF 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLF 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update -y
-sudo apt-get install -y caddy
+sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
 
-# 2. Stop docker container binding on port 80 so Caddy can take 80 & 443
-echo "⚙️ Reconfiguring Docker to expose internal port 8088..."
+# Add official Caddy repository with clean curl flags (-fsSL)
+curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | sudo gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt-get update -y
+
+if sudo apt-get install -y caddy; then
+    echo "✓ Caddy installed via apt repository"
+else
+    echo "Installing Caddy via official release binary..."
+    curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz" | sudo tar -xz -C /usr/bin caddy
+    chmod +x /usr/bin/caddy
+    cat << 'EOF' > /etc/systemd/system/caddy.service
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+fi
+
+# 2. Stop docker container binding on port 80 so Caddy can bind 80 & 443
+echo "⚙️ Reconfiguring Docker to internal port 8088..."
 docker stop btc-options-pinning 2>/dev/null || true
 docker rm btc-options-pinning 2>/dev/null || true
 
@@ -61,6 +92,7 @@ docker run -d \
 
 # 3. Configure Caddy with automatic Let's Encrypt SSL
 echo "🔒 Configuring Caddy SSL reverse proxy..."
+mkdir -p /etc/caddy
 cat << EOF > /etc/caddy/Caddyfile
 $DOMAIN {
     reverse_proxy 127.0.0.1:8088
