@@ -793,6 +793,93 @@
   let activeExpiriesList = [];
   let currentTargetKey = 'group_today';
   const clientTimelineCache = {};
+  let activeTickSet = new Set();
+
+  // Optimal strike tick label selector (aligned with round thousands, 0% 500s displayed)
+  function computeOptimalTickSet(labels) {
+    if (!labels || labels.length === 0) return new Set();
+    const n = labels.length;
+
+    // High density / quarterly (e.g. > 50 strikes): show clean 10,000 milestones
+    if (n > 50) {
+      const s = new Set();
+      labels.forEach((val, idx) => {
+        if (Number(val) % 10000 === 0) s.add(idx);
+      });
+      return s;
+    }
+
+    // Determine dense thousands in 500-increment zone
+    const isDenseThousand = new Array(n).fill(false);
+    for (let i = 0; i < n; i++) {
+      const s = Number(labels[i]);
+      if (s % 1000 !== 0) continue;
+      const prevS = i > 0 ? Number(labels[i - 1]) : null;
+      const nextS = i < n - 1 ? Number(labels[i + 1]) : null;
+      if (s % 2000 !== 0) {
+        // Odd thousand (e.g. 73k, 75k, 77k): only dense if flanked by 500s on both sides
+        if (prevS && Math.abs(s - prevS) === 500 && nextS && Math.abs(nextS - s) === 500) {
+          isDenseThousand[i] = true;
+        }
+      } else {
+        // Even thousand: always a core milestone candidate
+        isDenseThousand[i] = true;
+      }
+    }
+
+    const shown = new Set();
+    const minGap = n > 22 ? 2 : 1;
+
+    // Priority 1: Dense 500-zone thousands (e.g. 72k, 73k, 74k, 75k, 76k, 77k, 78k)
+    // Every single 1,000 in this active money zone is shown, while .500 strikes remain hidden
+    for (let i = 0; i < n; i++) {
+      if (isDenseThousand[i]) {
+        const s = Number(labels[i]);
+        const prevS = i > 0 ? Number(labels[i - 1]) : null;
+        const nextS = i < n - 1 ? Number(labels[i + 1]) : null;
+        const isIn500 = (prevS && Math.abs(s - prevS) === 500) || (nextS && Math.abs(nextS - s) === 500);
+        if (isIn500) {
+          shown.add(i);
+        }
+      }
+    }
+
+    // Priority 2: Outside 500 zone (stride even thousands with minGap to avoid text collision)
+    const denseIndices = Array.from(shown).sort((a, b) => a - b);
+    if (denseIndices.length > 0) {
+      const minDense = denseIndices[0];
+      let curr = minDense;
+      for (let i = minDense - 1; i >= 0; i--) {
+        const s = Number(labels[i]);
+        if (s % 2000 === 0 && (curr - i) >= minGap) {
+          shown.add(i);
+          curr = i;
+        }
+      }
+
+      const maxDense = denseIndices[denseIndices.length - 1];
+      curr = maxDense;
+      for (let i = maxDense + 1; i < n; i++) {
+        const s = Number(labels[i]);
+        if (s % 2000 === 0 && (i - curr) >= minGap) {
+          shown.add(i);
+          curr = i;
+        }
+      }
+    } else {
+      // If no 500-zone exists in this expiry, stride even thousands
+      let curr = -999;
+      for (let i = 0; i < n; i++) {
+        const s = Number(labels[i]);
+        if (s % 2000 === 0 && (i - curr) >= minGap) {
+          shown.add(i);
+          curr = i;
+        }
+      }
+    }
+
+    return shown;
+  }
 
   // Server-rendered initial snapshot for INSTANT zero-delay chart rendering
   {% if snap %}
@@ -1145,7 +1232,21 @@
           }
         },
         scales: {
-          x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 14, font: { size: 10, weight: 'bold' } } },
+          x: {
+            grid: { display: false, drawTicks: false },
+            ticks: {
+              maxRotation: 0,
+              autoSkip: false,
+              font: { size: 10, weight: 'bold' },
+              color: '#94a3b8',
+              callback: function(val, index) {
+                if (!activeTickSet || !activeTickSet.has(index)) return '';
+                const label = this.getLabelForValue ? this.getLabelForValue(val) : val;
+                const num = Number(label);
+                return isNaN(num) ? label : Math.round(num).toString();
+              }
+            }
+          },
           y: { position: 'left', grid: { color: 'rgba(30, 44, 74, 0.6)' }, title: { display: true, text: 'Open Interest (BTC)', font: { size: 10, weight: 'bold' } } },
           y1: { position: 'right', grid: { display: false }, title: { display: true, text: 'IV (%)', font: { size: 10, weight: 'bold' }, color: '#f472b6' }, ticks: { color: '#f472b6' }, min: 10, max: 90 }
         }
@@ -1205,7 +1306,21 @@
           }
         },
         scales: {
-          x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 14, font: { size: 10, weight: 'bold' } } },
+          x: {
+            grid: { display: false, drawTicks: false },
+            ticks: {
+              maxRotation: 0,
+              autoSkip: false,
+              font: { size: 10, weight: 'bold' },
+              color: '#94a3b8',
+              callback: function(val, index) {
+                if (!activeTickSet || !activeTickSet.has(index)) return '';
+                const label = this.getLabelForValue ? this.getLabelForValue(val) : val;
+                const num = Number(label);
+                return isNaN(num) ? label : Math.round(num).toString();
+              }
+            }
+          },
           y: { grid: { color: 'rgba(30, 44, 74, 0.6)' }, title: { display: true, text: 'USD / 1% move', font: { size: 10 } } }
         }
       }
@@ -1344,6 +1459,7 @@
       // 4. Update Both Charts with matching labels
       const strikes = snap.strikes || [];
       const labels = strikes.map(s => s.strike);
+      activeTickSet = computeOptimalTickSet(labels);
 
       let callData, putData;
       if (currentMetricView === 'volume') {
