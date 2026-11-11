@@ -504,6 +504,140 @@ def api_timeline(expiry_date: Optional[str] = None, scope: str = "active"):
     return result
 
 
+# ---------------- GEX+ 2D Simulation Matrix API ----------------
+
+@app.get("/api/gex_plus")
+@app.get("/api/gex-plus")
+def api_gex_plus(
+    expiry: Optional[str] = Query(None),
+    price_range: float = Query(0.20, ge=0.05, le=0.50),
+    iv_range: float = Query(0.30, ge=0.10, le=0.60),
+):
+    """
+    Kingfisher GEX+ 2D Simulation Matrix API.
+    Computes Net GEX across a 2D grid of Spot Price vs ATM IV scenarios.
+    """
+    cache_key = f"gex_plus_{expiry or 'default'}_{price_range}_{iv_range}"
+    try:
+        from src.cache import memory_cache
+        cached = memory_cache.get(cache_key)
+        if cached:
+            return cached
+    except Exception:
+        pass
+
+    with get_db() as conn:
+        # 1. Latest snapshot time
+        cur_time = conn.execute("SELECT snapshot_time_bkk FROM snapshots ORDER BY snapshot_time_bkk DESC LIMIT 1")
+        row_time = cur_time.fetchone()
+        if not row_time:
+            return {"error": "no data", "matrix": []}
+        latest_time = row_time["snapshot_time_bkk"]
+
+        # 2. Get active expiries for group resolution
+        from datetime import datetime, timezone, timedelta
+        tz_bkk = timezone(timedelta(hours=7))
+        now_bkk = datetime.now(tz_bkk)
+        today_str = now_bkk.strftime("%Y-%m-%d")
+        tomorrow_str = (now_bkk + timedelta(days=1)).strftime("%Y-%m-%d")
+        weekday = now_bkk.weekday()
+        days_to_friday = (4 - weekday) % 7
+        friday_str = (now_bkk + timedelta(days=days_to_friday)).strftime("%Y-%m-%d")
+        month_prefix = now_bkk.strftime("%Y-%m")
+
+        cur_exp = conn.execute("""
+            SELECT DISTINCT expiry_date FROM snapshots 
+            WHERE snapshot_time_bkk = ?
+            ORDER BY expiry_date ASC
+        """, (latest_time,))
+        all_dates = [r["expiry_date"] for r in cur_exp.fetchall()]
+        active_dates = [d for d in all_dates if is_expiry_active(d)]
+        if not active_dates and all_dates:
+            active_dates = all_dates[-4:]
+
+        today_tmrw_dates = [d for d in active_dates if d <= tomorrow_str] or (active_dates[:1] if active_dates else [])
+        weekly_dates = [d for d in active_dates if d <= friday_str] or (active_dates[:min(4, len(active_dates))] if active_dates else [])
+        monthly_dates = [d for d in active_dates if d.startswith(month_prefix)] or weekly_dates
+
+        target_dates = []
+        target_label = ""
+        exp_id = expiry or "group_today"
+
+        if exp_id == "group_today":
+            target_dates = today_tmrw_dates
+            target_label = "วันนี้/พรุ่งนี้ (รวบ 2 วัน)"
+        elif exp_id == "group_weekly":
+            target_dates = weekly_dates
+            target_label = f"สัปดาห์นี้ (ถึงศุกร์ {friday_str})"
+        elif exp_id == "group_monthly":
+            target_dates = monthly_dates
+            target_label = f"เดือนนี้ ({month_prefix})"
+        elif exp_id in ("all", "all_expiries"):
+            target_dates = active_dates
+            target_label = "รวมทุก Expiry (All Aggregated)"
+        elif exp_id in all_dates:
+            target_dates = [exp_id]
+            target_label = f"Expiry {exp_id}"
+        elif "," in exp_id:
+            target_dates = [d.strip() for d in exp_id.split(",") if d.strip()]
+            target_label = f"รวบกลุ่ม ({len(target_dates)} สัญญา)"
+        else:
+            target_dates = today_tmrw_dates or active_dates[:1]
+            target_label = "วันนี้/พรุ่งนี้"
+
+        if not target_dates:
+            return {"error": "no active expiries found", "matrix": []}
+
+        # 3. Fetch strikes & snapshot metadata
+        placeholders = ",".join("?" for _ in target_dates)
+        query = f"""
+            SELECT o.strike, o.call_oi, o.put_oi, o.call_iv, o.put_iv, o.expiry_date,
+                   s.hours_to_expiry, s.atm_iv, s.index_price
+            FROM oi_by_strike o
+            JOIN snapshots s ON o.snapshot_time_bkk = s.snapshot_time_bkk AND o.expiry_date = s.expiry_date
+            WHERE o.snapshot_time_bkk = ? AND o.expiry_date IN ({placeholders})
+        """
+        params = [latest_time] + target_dates
+        cur_st = conn.execute(query, params)
+        raw_rows = [dict(r) for r in cur_st.fetchall()]
+
+        if not raw_rows:
+            return {"error": "no strikes found", "matrix": []}
+
+        spot = max(r["index_price"] for r in raw_rows if r.get("index_price"))
+        valid_ivs = [r["atm_iv"] for r in raw_rows if r.get("atm_iv")]
+        atm_iv = (sum(valid_ivs) / len(valid_ivs)) if valid_ivs else 45.0
+
+        for r in raw_rows:
+            r["t_years"] = max(float(r.get("hours_to_expiry") or 24.0) / 8760.0, 0.5 / 8760.0)
+
+        # 4. Compute GEX+ Matrix
+        from src.options_math import calculate_gex_plus_matrix
+        res = calculate_gex_plus_matrix(
+            spot=spot,
+            strikes_data=raw_rows,
+            t_years=0.05,
+            atm_iv=atm_iv,
+            price_steps=41,
+            iv_steps=25,
+            price_range_pct=price_range,
+            iv_range_pct=iv_range,
+        )
+
+        res["snapshot_time_bkk"] = latest_time
+        res["expiry"] = exp_id
+        res["target_dates"] = target_dates
+        res["target_label"] = target_label
+
+        try:
+            from src.cache import memory_cache
+            memory_cache.set(cache_key, res, ttl=120.0)
+        except Exception:
+            pass
+
+        return res
+
+
 # ---------------- CSV Exports ----------------
 
 @app.get("/export/snapshots.csv")
@@ -875,6 +1009,46 @@ def page_gex_aggregate(request: Request):
             "bigs": bigs,
         },
     )
+
+
+@app.get("/gex_plus", response_class=HTMLResponse)
+@app.get("/gex-plus", response_class=HTMLResponse)
+def page_gex_plus(request: Request, expiry: Optional[str] = Query(None)):
+    """Kingfisher GEX+ 2D Heatmap & Vanna Analysis Page."""
+    with get_db() as conn:
+        cur_time = conn.execute("SELECT snapshot_time_bkk FROM snapshots ORDER BY snapshot_time_bkk DESC LIMIT 1")
+        row_time = cur_time.fetchone()
+        latest_time = row_time["snapshot_time_bkk"] if row_time else None
+
+        cur_exp = conn.execute("""
+            SELECT expiry_date, expiry_type, hours_to_expiry, index_price, atm_iv, total_oi
+            FROM snapshots
+            WHERE snapshot_time_bkk = ?
+            ORDER BY hours_to_expiry ASC
+        """, (latest_time,) if latest_time else ("",))
+        expiries = [dict(r) for r in cur_exp.fetchall()]
+
+        active_expiries = [e for e in expiries if is_expiry_active(e["expiry_date"])]
+        if not active_expiries and expiries:
+            active_expiries = expiries[:4]
+
+        latest_spot = expiries[0]["index_price"] if expiries and expiries[0].get("index_price") else 0.0
+        latest_iv = expiries[0]["atm_iv"] if expiries and expiries[0].get("atm_iv") else 40.0
+
+    return templates.TemplateResponse(
+        request=request,
+        name="gex_plus.html",
+        context={
+            "page": "gex_plus",
+            "latest_time": latest_time,
+            "expiries": expiries,
+            "active_expiries": active_expiries,
+            "selected_expiry": expiry or "group_today",
+            "latest_spot": latest_spot,
+            "latest_iv": latest_iv,
+        },
+    )
+
 
 
 @app.get("/results", response_class=HTMLResponse)
