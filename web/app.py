@@ -561,7 +561,7 @@ def api_gex_plus(
 
         target_dates = []
         target_label = ""
-        exp_id = expiry or "group_today"
+        exp_id = expiry or "all"
 
         if exp_id == "group_today":
             target_dates = today_tmrw_dates
@@ -582,8 +582,8 @@ def api_gex_plus(
             target_dates = [d.strip() for d in exp_id.split(",") if d.strip()]
             target_label = f"รวบกลุ่ม ({len(target_dates)} สัญญา)"
         else:
-            target_dates = today_tmrw_dates or active_dates[:1]
-            target_label = "วันนี้/พรุ่งนี้"
+            target_dates = active_dates
+            target_label = "รวมทุก Expiry (All Aggregated)"
 
         if not target_dates:
             return {"error": "no active expiries found", "matrix": []}
@@ -618,8 +618,8 @@ def api_gex_plus(
             strikes_data=raw_rows,
             t_years=0.05,
             atm_iv=atm_iv,
-            price_steps=41,
-            iv_steps=25,
+            price_steps=61,
+            iv_steps=31,
             price_range_pct=price_range,
             iv_range_pct=iv_range,
         )
@@ -1043,7 +1043,7 @@ def page_gex_plus(request: Request, expiry: Optional[str] = Query(None)):
             "latest_time": latest_time,
             "expiries": expiries,
             "active_expiries": active_expiries,
-            "selected_expiry": expiry or "group_today",
+            "selected_expiry": expiry or "all",
             "latest_spot": latest_spot,
             "latest_iv": latest_iv,
         },
