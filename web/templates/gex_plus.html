@@ -1,0 +1,866 @@
+{% extends "base.html" %}
+
+{% block title %}GEX+ Matrix (Kingfisher Style) - BTC Options Pinning{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Header Banner -->
+  <div class="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-darkborder gap-4">
+    <div>
+      <div class="flex items-center gap-2.5">
+        <span class="px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 text-xs font-bold uppercase tracking-wider">
+          🌊 2D Surface Model
+        </span>
+        <h1 class="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
+          <span>Kingfisher GEX+ Matrix</span>
+        </h1>
+      </div>
+      <p class="text-xs text-slate-400 mt-1.5">
+        แบบจำลองจำลองแรงเหวี่ยงและความหนืดของ Dealer Gamma ตามราคา Spot และ Implied Volatility (IV) รอบล่าสุด ({{ latest_time or 'ไม่มีข้อมูล' }})
+      </p>
+    </div>
+
+    <!-- Quick Stat Badges -->
+    <div class="flex flex-wrap items-center gap-2.5">
+      <div class="bg-darkcard border border-darkborder px-3 py-1.5 rounded-lg flex items-center gap-2">
+        <span class="text-xs text-slate-400">BTC Spot</span>
+        <span id="badgeSpot" class="text-sm font-bold text-amber-400 font-mono">${{ "{:,.2f}".format(latest_spot) if latest_spot else "---" }}</span>
+      </div>
+      <div class="bg-darkcard border border-darkborder px-3 py-1.5 rounded-lg flex items-center gap-2">
+        <span class="text-xs text-slate-400">ATM IV</span>
+        <span id="badgeIv" class="text-sm font-bold text-sky-400 font-mono">{{ "{:.1f}%".format(latest_iv) if latest_iv else "---" }}</span>
+      </div>
+      <button onclick="fetchGexPlusData()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-3 py-2 rounded-lg border border-darkborder transition flex items-center gap-1.5 shadow">
+        <span id="refreshIcon">🔄</span> รีเฟรช
+      </button>
+    </div>
+  </div>
+
+  <!-- Filter & Controls Toolbar -->
+  <div class="bg-darkcard border border-darkborder rounded-xl p-4 shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+    <!-- Expiry Quick Buttons & Dropdown -->
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs font-semibold text-slate-400 mr-1">เลือกสัญญา:</span>
+      <button onclick="setExpiry('group_today')" id="btn_group_today" class="expiry-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm">
+        ⚡ วันนี้/พรุ่งนี้
+      </button>
+      <button onclick="setExpiry('group_weekly')" id="btn_group_weekly" class="expiry-btn px-3 py-1.5 rounded-lg text-xs font-medium transition text-slate-300 hover:bg-slate-800 hover:text-white border border-transparent">
+        📅 สัปดาห์นี้
+      </button>
+      <button onclick="setExpiry('group_monthly')" id="btn_group_monthly" class="expiry-btn px-3 py-1.5 rounded-lg text-xs font-medium transition text-slate-300 hover:bg-slate-800 hover:text-white border border-transparent">
+        🗓️ เดือนนี้
+      </button>
+      <button onclick="setExpiry('all')" id="btn_all" class="expiry-btn px-3 py-1.5 rounded-lg text-xs font-medium transition text-slate-300 hover:bg-slate-800 hover:text-white border border-transparent">
+        🌐 รวมทุก Expiry
+      </button>
+
+      <!-- Dropdown for individual expiries -->
+      <select id="singleExpirySelect" onchange="if(this.value) setExpiry(this.value)" class="bg-slate-900 border border-darkborder text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-cyan-500">
+        <option value="">-- รายสัญญาเดี่ยว --</option>
+        {% for exp in active_expiries %}
+        <option value="{{ exp.expiry_date }}">
+          {{ exp.expiry_date }} (เหลือ {{ exp.hours_to_expiry }} ชม.)
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Parameter Range Selectors -->
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="flex items-center gap-1.5 text-xs text-slate-400">
+        <span>ช่วงราคา:</span>
+        <select id="priceRangeSelect" onchange="fetchGexPlusData()" class="bg-slate-900 border border-darkborder text-slate-200 text-xs rounded-lg px-2 py-1 focus:outline-none focus:border-cyan-500">
+          <option value="0.15">±15%</option>
+          <option value="0.20" selected>±20% (ค่ามาตรฐาน)</option>
+          <option value="0.25">±25%</option>
+          <option value="0.30">±30%</option>
+        </select>
+      </div>
+
+      <div class="flex items-center gap-1.5 text-xs text-slate-400">
+        <span>ช่วง IV:</span>
+        <select id="ivRangeSelect" onchange="fetchGexPlusData()" class="bg-slate-900 border border-darkborder text-slate-200 text-xs rounded-lg px-2 py-1 focus:outline-none focus:border-cyan-500">
+          <option value="0.20">±20%</option>
+          <option value="0.30" selected>±30% (ค่ามาตรฐาน)</option>
+          <option value="0.40">±40%</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Heatmap Canvas Card -->
+  <div class="bg-darkcard border border-darkborder rounded-xl p-4 sm:p-5 shadow-2xl relative">
+    
+    <!-- Heatmap Top Legend & Metadata -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 mb-3 border-b border-darkborder/70 gap-3">
+      <div class="flex items-center gap-3">
+        <span class="text-sm font-bold text-white flex items-center gap-2">
+          <span>📊 Heatmap จำลอง Dealer Net GEX</span>
+        </span>
+        <span id="heatmapSubtitle" class="text-xs text-slate-400 hidden md:inline">
+          แกน Y: Spot Price ($) | แกน X: Implied Volatility (%)
+        </span>
+      </div>
+
+      <!-- Colorbar Legend -->
+      <div class="flex items-center gap-2.5 text-xs">
+        <span class="text-rose-400 font-mono font-medium flex items-center gap-1">
+          <span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block shadow-sm"></span>
+          <span id="lblMinGex">-XX.Xm</span>
+        </span>
+        <div class="w-28 sm:w-44 h-3 rounded-full relative overflow-hidden shadow-inner" style="background: linear-gradient(to right, #e11d48, #d946ef, #1e293b, #06b6d4, #10b981);">
+          <div class="absolute inset-y-0 left-1/2 w-0.5 bg-white/40"></div>
+        </div>
+        <span class="text-emerald-400 font-mono font-medium flex items-center gap-1">
+          <span id="lblMaxGex">+XX.Xm</span>
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block shadow-sm"></span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Canvas Container with Loading Overlay -->
+    <div class="relative w-full overflow-hidden rounded-lg bg-[#0b0f19] border border-slate-800" style="min-height: 520px;">
+      
+      <!-- Loading Spinner Overlay -->
+      <div id="loadingOverlay" class="absolute inset-0 bg-darkbg/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center gap-3 transition-opacity">
+        <div class="w-10 h-10 border-4 border-cyan-500/20 border-t-cyan-400 rounded-full animate-spin"></div>
+        <div class="text-xs font-medium text-slate-300">กำลังคำนวณ 2D GEX Matrix...</div>
+      </div>
+
+      <!-- Interactive HTML5 Canvas -->
+      <canvas id="gexCanvas" class="w-full h-full block cursor-crosshair"></canvas>
+
+      <!-- Floating HUD Tooltip Card -->
+      <div id="hudCard" class="hidden absolute pointer-events-none z-30 bg-slate-900/95 border border-cyan-500/40 shadow-2xl rounded-xl p-3.5 backdrop-blur-md w-72 text-xs transition-transform duration-75">
+        <div class="flex items-center justify-between pb-1.5 mb-1.5 border-b border-slate-700/80">
+          <span class="font-bold text-white flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+            จุดจำลองสถานการณ์
+          </span>
+          <span id="hudRegimeBadge" class="px-1.5 py-0.5 rounded text-[10px] font-bold">---</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-slate-300 font-mono">
+          <div>
+            <div class="text-[10px] text-slate-400">ราคา Spot จำลอง</div>
+            <div id="hudSpot" class="font-bold text-white text-sm">---</div>
+            <div id="hudSpotDiff" class="text-[10px] text-slate-400">---</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-slate-400">IV จำลอง</div>
+            <div id="hudIv" class="font-bold text-sky-300 text-sm">---</div>
+            <div id="hudIvDiff" class="text-[10px] text-slate-400">---</div>
+          </div>
+        </div>
+        <div class="mt-2 pt-2 border-t border-slate-800 flex items-baseline justify-between">
+          <span class="text-slate-400">Net Dealer GEX:</span>
+          <span id="hudGex" class="font-bold text-sm font-mono">---</span>
+        </div>
+        <div id="hudActionText" class="mt-1.5 text-[10px] text-slate-400 leading-tight">
+          ---
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Key Reference Badges Bar -->
+    <div class="mt-3 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2 pt-2 border-t border-darkborder/50">
+      <div class="flex flex-wrap items-center gap-4">
+        <span class="flex items-center gap-1.5">
+          <span class="w-3 h-0.5 border-t border-dashed border-amber-400 inline-block"></span>
+          <span>เส้นประสีทอง: Spot ปัจจุบัน (<span id="refSpotVal" class="text-amber-400 font-mono font-bold">---</span>)</span>
+        </span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-0.5 h-3 border-l border-dashed border-sky-400 inline-block"></span>
+          <span>เส้นประสีฟ้า: ATM IV ปัจจุบัน (<span id="refIvVal" class="text-sky-400 font-mono font-bold">---</span>)</span>
+        </span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-3 h-0.5 border-t border-dashed border-emerald-400 inline-block"></span>
+          <span>เส้นเขียว: แม่เหล็กดูดราคา (Max GEX: <span id="refMaxVal" class="text-emerald-400 font-mono font-bold">---</span>)</span>
+        </span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-3 h-0.5 border-t border-dashed border-rose-400 inline-block"></span>
+          <span>เส้นแดง: โซนเร่งความผันผวน (Min GEX: <span id="refMinVal" class="text-rose-400 font-mono font-bold">---</span>)</span>
+        </span>
+      </div>
+      <div>
+        <span class="text-slate-400 text-[11px]">Hover บน Heatmap เพื่อจำลองสถานการณ์</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Four Bento Analytical Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+    <!-- Card 1: Current Regime -->
+    <div class="bg-darkcard border border-darkborder rounded-xl p-4 shadow">
+      <div class="flex items-center justify-between text-xs">
+        <span class="text-slate-400 uppercase tracking-wider font-semibold">สถานะ Dealer ปัจจุบัน</span>
+        <span id="cardRegimePill" class="px-2 py-0.5 rounded font-bold text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+          🟢 Long Gamma
+        </span>
+      </div>
+      <div class="mt-3">
+        <div id="cardCurrentGex" class="text-2xl font-bold font-mono text-emerald-400">+$0.0m</div>
+        <div class="text-xs text-slate-400 mt-1">USD ต่อการขยับ Spot 1%</div>
+      </div>
+      <div id="cardRegimeDesc" class="mt-3 pt-2 border-t border-darkborder/50 text-xs text-slate-400">
+        Market Maker ช่วยซับแรงกระแทก ลดความผันผวนของตลาด
+      </div>
+    </div>
+
+    <!-- Card 2: Volatility Magnet (Max GEX) -->
+    <div class="bg-darkcard border border-darkborder rounded-xl p-4 shadow">
+      <div class="flex items-center justify-between text-xs">
+        <span class="text-slate-400 uppercase tracking-wider font-semibold">แม่เหล็กดูดราคา (Max GEX)</span>
+        <span class="px-2 py-0.5 rounded font-bold text-[11px] bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+          🧲 Pin Magnet
+        </span>
+      </div>
+      <div class="mt-3">
+        <div id="cardMaxGexSpot" class="text-2xl font-bold font-mono text-cyan-400">$---</div>
+        <div class="text-xs text-slate-400 mt-1">Net GEX: <span id="cardMaxGexVal" class="text-white font-mono font-semibold">---</span></div>
+      </div>
+      <div id="cardMaxGexDist" class="mt-3 pt-2 border-t border-darkborder/50 text-xs text-slate-400">
+        ระดับราคาที่มีแรงดูดของ Market Maker หนาแน่นที่สุด
+      </div>
+    </div>
+
+    <!-- Card 3: Volatility Accelerator (Min GEX) -->
+    <div class="bg-darkcard border border-darkborder rounded-xl p-4 shadow">
+      <div class="flex items-center justify-between text-xs">
+        <span class="text-slate-400 uppercase tracking-wider font-semibold">จุดเร่งความผันผวน (Min GEX)</span>
+        <span class="px-2 py-0.5 rounded font-bold text-[11px] bg-rose-500/20 text-rose-400 border border-rose-500/30">
+          ⚠️ Acceleration
+        </span>
+      </div>
+      <div class="mt-3">
+        <div id="cardMinGexSpot" class="text-2xl font-bold font-mono text-rose-400">$---</div>
+        <div class="text-xs text-slate-400 mt-1">Net GEX: <span id="cardMinGexVal" class="text-white font-mono font-semibold">---</span></div>
+      </div>
+      <div id="cardMinGexDist" class="mt-3 pt-2 border-t border-darkborder/50 text-xs text-slate-400">
+        หากหลุดระดับนี้ Dealer จะต้องขายตามน้ำ ขยายช่วงทุบราคา
+      </div>
+    </div>
+
+    <!-- Card 4: Gamma Flip Point -->
+    <div class="bg-darkcard border border-darkborder rounded-xl p-4 shadow">
+      <div class="flex items-center justify-between text-xs">
+        <span class="text-slate-400 uppercase tracking-wider font-semibold">จุดเปลี่ยนสภาวะ (Gamma Flip)</span>
+        <span class="px-2 py-0.5 rounded font-bold text-[11px] bg-amber-500/20 text-amber-400 border border-amber-500/30">
+          ⚖️ Flip Pivot
+        </span>
+      </div>
+      <div class="mt-3">
+        <div id="cardFlipSpot" class="text-2xl font-bold font-mono text-amber-400">$---</div>
+        <div class="text-xs text-slate-400 mt-1">จุดที่ Net GEX ตัดผ่าน 0</div>
+      </div>
+      <div id="cardFlipDist" class="mt-3 pt-2 border-t border-darkborder/50 text-xs text-slate-400">
+        เส้นแบ่งระหว่างความสงบนิ่งกับการเกิดเทรนด์รุนแรง
+      </div>
+    </div>
+  </div>
+
+  <!-- Educational & Mechanics Guide Card -->
+  <div class="bg-darkcard border border-darkborder rounded-xl p-5 shadow">
+    <h3 class="text-sm font-bold text-white flex items-center gap-2 mb-3">
+      <span>📖 คู่มืออ่าน Heatmap GEX+ สไตล์ The Kingfisher & มิติ Vanna</span>
+    </h3>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-slate-300 leading-relaxed">
+      <div class="bg-slate-900/60 p-3.5 rounded-lg border border-darkborder/40">
+        <div class="font-bold text-cyan-400 mb-1 flex items-center gap-1.5">
+          <span>🟢 โซนสีเขียว/ฟ้า (Long Gamma: $\Delta > 0$)</span>
+        </div>
+        <p class="text-slate-400">
+          เมื่อราคาอยู่ในโซนนี้ Market Maker จะเทรด <strong>"สวนทางกับตลาด"</strong> (ขึ้นแล้วขาย / ลงแล้วซื้อ) เพื่อปรับ Delta ให้เป็นกลาง ส่งผลให้ทำหน้าที่เป็น <strong>"โช้คอัพ"</strong> ซับแรงเหวี่ยง ทำให้ราคาวิ่งไซด์เวย์เกาะติด Strike (Sticky Pinning)
+        </p>
+      </div>
+
+      <div class="bg-slate-900/60 p-3.5 rounded-lg border border-darkborder/40">
+        <div class="font-bold text-rose-400 mb-1 flex items-center gap-1.5">
+          <span>🟣 โซนสีม่วง/แดง (Short Gamma: $\Delta < 0$)</span>
+        </div>
+        <p class="text-slate-400">
+          เมื่อราคาหลุดเข้าสู่โซนนี้ Market Maker จะต้องเทรด <strong>"ตามน้ำกับตลาด"</strong> (ขึ้นต้องรีบไล่ซื้อ / ลงต้องเทขายคัท) ทำให้เกิด <strong>"Feedback Loop"</strong> ที่ขยายขนาดการแกว่งตัวของราคา ตลาดจะเคลื่อนที่ไวแบบ Rollercoaster
+        </p>
+      </div>
+
+      <div class="bg-slate-900/60 p-3.5 rounded-lg border border-darkborder/40">
+        <div class="font-bold text-amber-400 mb-1 flex items-center gap-1.5">
+          <span>🌊 ผลกระทบของ Vanna (แกนแนวนอน IV)</span>
+        </div>
+        <p class="text-slate-400">
+          <strong>Vanna</strong> คืออัตราการเปลี่ยนของ Delta เมื่อ IV ขยับ: ที่ IV ต่ำ (ฝั่งซ้าย) Gamma จะกระจุกตัวแคบและทรงพลังมาก หากเกิด <strong>IV Crush</strong> หลังจบอีเวนต์หรือ Settlement ราคาจะถูกดูดเข้าสู่ Magnet Strike อย่างรวดเร็ว
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- High Performance GEX+ JavaScript Engine -->
+<script>
+let gexData = null;
+let currentSelectedExpiry = "{{ selected_expiry }}";
+
+// Color interpolator for Kingfisher Cyber Palette
+function getGexColor(val, minVal, maxVal) {
+  if (val === 0 || Math.abs(val) < 1e-4) {
+    return [15, 23, 42, 235]; // dark slate #0f172a
+  }
+
+  if (val > 0) {
+    // 0 to maxVal -> Slate to Cyan (#06b6d4) to Emerald (#10b981)
+    const t = Math.min(1.0, val / (maxVal || 1.0));
+    if (t < 0.5) {
+      // 0 to 0.5: #0f172a -> #06b6d4
+      const k = t / 0.5;
+      const r = Math.round(15 + k * (6 - 15));
+      const g = Math.round(23 + k * (182 - 23));
+      const b = Math.round(42 + k * (212 - 42));
+      return [r, g, b, 240];
+    } else {
+      // 0.5 to 1.0: #06b6d4 -> #10b981
+      const k = (t - 0.5) / 0.5;
+      const r = Math.round(6 + k * (16 - 6));
+      const g = Math.round(182 + k * (185 - 182));
+      const b = Math.round(212 + k * (129 - 212));
+      return [r, g, b, 245];
+    }
+  } else {
+    // 0 to minVal (<0) -> Slate to Magenta (#d946ef) to Crimson (#e11d48)
+    const t = Math.min(1.0, Math.abs(val) / (Math.abs(minVal) || 1.0));
+    if (t < 0.5) {
+      // 0 to 0.5: #0f172a -> #d946ef
+      const k = t / 0.5;
+      const r = Math.round(15 + k * (217 - 15));
+      const g = Math.round(23 + k * (70 - 23));
+      const b = Math.round(42 + k * (239 - 42));
+      return [r, g, b, 240];
+    } else {
+      // 0.5 to 1.0: #d946ef -> #e11d48
+      const k = (t - 0.5) / 0.5;
+      const r = Math.round(217 + k * (225 - 217));
+      const g = Math.round(70 + k * (29 - 70));
+      const b = Math.round(239 + k * (72 - 239));
+      return [r, g, b, 245];
+    }
+  }
+}
+
+function formatUSD(val) {
+  if (Math.abs(val) >= 1e6) {
+    return (val > 0 ? "+" : "") + (val / 1e6).toFixed(1) + "m";
+  } else if (Math.abs(val) >= 1e3) {
+    return (val > 0 ? "+" : "") + (val / 1e3).toFixed(1) + "k";
+  }
+  return (val > 0 ? "+" : "") + val.toFixed(0);
+}
+
+function formatPrice(val) {
+  return "$" + Number(val).toLocaleString('en-US', {maximumFractionDigits: 0});
+}
+
+function setExpiry(exp) {
+  currentSelectedExpiry = exp;
+  document.querySelectorAll('.expiry-btn').forEach(btn => {
+    btn.className = 'expiry-btn px-3 py-1.5 rounded-lg text-xs font-medium transition text-slate-300 hover:bg-slate-800 hover:text-white border border-transparent';
+  });
+  const activeBtn = document.getElementById('btn_' + exp);
+  if (activeBtn) {
+    activeBtn.className = 'expiry-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm';
+  }
+  const select = document.getElementById('singleExpirySelect');
+  if (select && exp.startsWith('202')) {
+    select.value = exp;
+  } else if (select) {
+    select.value = '';
+  }
+  fetchGexPlusData();
+}
+
+async function fetchGexPlusData() {
+  const loading = document.getElementById('loadingOverlay');
+  if (loading) loading.classList.remove('hidden');
+
+  const pRange = document.getElementById('priceRangeSelect').value || "0.20";
+  const ivRange = document.getElementById('ivRangeSelect').value || "0.30";
+
+  try {
+    const url = `/api/gex_plus?expiry=${encodeURIComponent(currentSelectedExpiry)}&price_range=${pRange}&iv_range=${ivRange}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    gexData = data;
+    renderHeatmap();
+    updateAnalyticalCards();
+  } catch (err) {
+    console.error("Error loading GEX+ data:", err);
+    if (window.showToast) {
+      window.showToast("เกิดข้อผิดพลาด", "ไม่สามารถดึงข้อมูล GEX+ ได้: " + err.message, false);
+    }
+  } finally {
+    if (loading) loading.classList.add('hidden');
+  }
+}
+
+function updateAnalyticalCards() {
+  if (!gexData) return;
+
+  // 1. Current Spot & ATM IV Badges
+  document.getElementById('badgeSpot').textContent = formatPrice(gexData.current_spot);
+  document.getElementById('badgeIv').textContent = gexData.current_iv.toFixed(1) + "%";
+
+  // 2. Legend labels
+  document.getElementById('lblMinGex').textContent = formatUSD(gexData.min_gex);
+  document.getElementById('lblMaxGex').textContent = formatUSD(gexData.max_gex);
+
+  // 3. Card 1: Current Regime
+  const currGex = gexData.current_net_gex || 0;
+  const isLong = currGex >= 0;
+  const cardCurrentGex = document.getElementById('cardCurrentGex');
+  const cardRegimePill = document.getElementById('cardRegimePill');
+  const cardRegimeDesc = document.getElementById('cardRegimeDesc');
+
+  cardCurrentGex.textContent = formatUSD(currGex);
+  if (isLong) {
+    cardCurrentGex.className = "text-2xl font-bold font-mono text-emerald-400";
+    cardRegimePill.className = "px-2 py-0.5 rounded font-bold text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+    cardRegimePill.textContent = "🟢 Long Gamma";
+    cardRegimeDesc.textContent = 'Market Maker ช่วยดูดซับแรงกระแทก ซื้อเวลาลง-ขายเวลาขึ้น สภาพตลาดสงบนิ่ง';
+  } else {
+    cardCurrentGex.className = "text-2xl font-bold font-mono text-rose-400";
+    cardRegimePill.className = "px-2 py-0.5 rounded font-bold text-[11px] bg-rose-500/20 text-rose-400 border border-rose-500/30";
+    cardRegimePill.textContent = "🟣 Short Gamma";
+    cardRegimeDesc.textContent = 'Market Maker ขยายแรงเหวี่ยง ต้องขายตามน้ำเวลาลง-ไล่ซื้อเวลาขึ้น ความผันผวนสูง';
+  }
+
+  // 4. Card 2: Volatility Magnet
+  document.getElementById('cardMaxGexSpot').textContent = formatPrice(gexData.max_gex_spot);
+  document.getElementById('cardMaxGexVal').textContent = formatUSD(gexData.max_gex_at_atm);
+  const maxDiffPct = ((gexData.max_gex_spot - gexData.current_spot) / gexData.current_spot * 100).toFixed(1);
+  document.getElementById('cardMaxGexDist').textContent = `ห่างจาก Spot ปัจจุบัน ${maxDiffPct > 0 ? "+" : ""}${maxDiffPct}% (จุดดูดราคาหลัก)`;
+
+  // 5. Card 3: Volatility Accelerator
+  document.getElementById('cardMinGexSpot').textContent = formatPrice(gexData.min_gex_spot);
+  document.getElementById('cardMinGexVal').textContent = formatUSD(gexData.min_gex_at_atm);
+  const minDiffPct = ((gexData.min_gex_spot - gexData.current_spot) / gexData.current_spot * 100).toFixed(1);
+  document.getElementById('cardMinGexDist').textContent = `ห่างจาก Spot ปัจจุบัน ${minDiffPct > 0 ? "+" : ""}${minDiffPct}% (จุดหลุดแนวรับเร่งเทขาย)`;
+
+  // 6. Card 4: Gamma Flip
+  if (gexData.gamma_flip_spot) {
+    document.getElementById('cardFlipSpot').textContent = formatPrice(gexData.gamma_flip_spot);
+    const flipDiffPct = ((gexData.gamma_flip_spot - gexData.current_spot) / gexData.current_spot * 100).toFixed(1);
+    document.getElementById('cardFlipDist').textContent = `ห่างจาก Spot ปัจจุบัน ${flipDiffPct > 0 ? "+" : ""}${flipDiffPct}% (จุดกลับขั้ว Gamma)`;
+  } else {
+    document.getElementById('cardFlipSpot').textContent = "ไม่มีในกรอบ";
+    document.getElementById('cardFlipDist').textContent = "สภาวะตลาดเป็นทิศทางเดียวตลอดช่วงราคา";
+  }
+
+  // Reference lines text
+  document.getElementById('refSpotVal').textContent = formatPrice(gexData.current_spot);
+  document.getElementById('refIvVal').textContent = gexData.current_iv.toFixed(1) + "%";
+  document.getElementById('refMaxVal').textContent = `${formatPrice(gexData.max_gex_spot)} (${formatUSD(gexData.max_gex_at_atm)})`;
+  document.getElementById('refMinVal').textContent = `${formatPrice(gexData.min_gex_spot)} (${formatUSD(gexData.min_gex_at_atm)})`;
+}
+
+// Canvas & Heatmap Renderer
+const canvas = document.getElementById('gexCanvas');
+const hud = document.getElementById('hudCard');
+let renderMetrics = null;
+
+function renderHeatmap() {
+  if (!gexData || !canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = rect.width || canvas.parentElement.clientWidth || 800;
+  const height = 540;
+
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const padding = { top: 35, right: 90, bottom: 45, left: 80 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+
+  renderMetrics = {
+    padding,
+    plotWidth,
+    plotHeight,
+    width,
+    height,
+    dpr
+  };
+
+  const prices = gexData.prices;
+  const ivs = gexData.ivs;
+  const matrix = gexData.matrix;
+  const numPrices = prices.length;
+  const numIvs = ivs.length;
+
+  if (numPrices < 2 || numIvs < 2) return;
+
+  // Background
+  ctx.fillStyle = "#0b0f19";
+  ctx.fillRect(0, 0, width, height);
+
+  // 1. Offscreen canvas for rendering the raw matrix cells and bilinear upscaling
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = numIvs;
+  offCanvas.height = numPrices;
+  const offCtx = offCanvas.getContext('2d');
+  const imgData = offCtx.createImageData(numIvs, numPrices);
+
+  const minGex = gexData.min_gex;
+  const maxGex = gexData.max_gex;
+
+  // Note: prices[0] is bottom (min price), prices[numPrices-1] is top (max price)
+  // In canvas image, row 0 is top. So price_idx mapped as (numPrices - 1 - row)
+  for (let r = 0; r < numPrices; r++) {
+    const pIdx = numPrices - 1 - r;
+    const pRow = matrix[pIdx] || [];
+    for (let c = 0; c < numIvs; c++) {
+      const val = pRow[c] || 0;
+      const [cr, cg, cb, ca] = getGexColor(val, minGex, maxGex);
+      const pixelIdx = (r * numIvs + c) * 4;
+      imgData.data[pixelIdx] = cr;
+      imgData.data[pixelIdx + 1] = cg;
+      imgData.data[pixelIdx + 2] = cb;
+      imgData.data[pixelIdx + 3] = ca;
+    }
+  }
+  offCtx.putImageData(imgData, 0, 0);
+
+  // Draw smoothed heatmap onto main canvas
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(offCanvas, padding.left, padding.top, plotWidth, plotHeight);
+  ctx.restore();
+
+  // 2. Draw Gridlines & Axes
+  ctx.strokeStyle = "rgba(51, 65, 85, 0.4)";
+  ctx.lineWidth = 1;
+  ctx.font = "11px monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+
+  // Y-Axis Ticks (Spot Prices)
+  const yTickCount = 8;
+  for (let i = 0; i <= yTickCount; i++) {
+    const frac = i / yTickCount;
+    const y = padding.top + plotHeight * (1 - frac);
+    const pVal = prices[0] + frac * (prices[numPrices - 1] - prices[0]);
+
+    // Gridline
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + plotWidth, y);
+    ctx.stroke();
+
+    // Label on left margin
+    ctx.fillStyle = "#94a3b8";
+    ctx.fillText("$" + Math.round(pVal).toLocaleString(), padding.left - 10, y);
+  }
+
+  // X-Axis Ticks (IV)
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  const xTickCount = 6;
+  for (let j = 0; j <= xTickCount; j++) {
+    const frac = j / xTickCount;
+    const x = padding.left + plotWidth * frac;
+    const ivVal = ivs[0] + frac * (ivs[numIvs - 1] - ivs[0]);
+
+    // Gridline
+    ctx.beginPath();
+    ctx.moveTo(x, padding.top);
+    ctx.lineTo(x, padding.top + plotHeight);
+    ctx.stroke();
+
+    // Label on bottom margin
+    ctx.fillStyle = "#94a3b8";
+    ctx.fillText(ivVal.toFixed(1) + "%", x, padding.top + plotHeight + 10);
+  }
+
+  // Axis Title Labels
+  ctx.save();
+  ctx.fillStyle = "#64748b";
+  ctx.font = "bold 11px sans-serif";
+  ctx.textAlign = "center";
+  // Y-axis label
+  ctx.translate(20, padding.top + plotHeight / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("Spot Price ($)", 0, 0);
+  ctx.restore();
+
+  // X-axis label
+  ctx.fillStyle = "#64748b";
+  ctx.font = "bold 11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("ATM Implied Volatility (%)", padding.left + plotWidth / 2, height - 12);
+
+  // 3. Coordinate conversion helpers
+  const getXFromIv = (iv) => {
+    const frac = (iv - ivs[0]) / (ivs[numIvs - 1] - ivs[0]);
+    return padding.left + Math.max(0, Math.min(1, frac)) * plotWidth;
+  };
+
+  const getYFromPrice = (p) => {
+    const frac = (p - prices[0]) / (prices[numPrices - 1] - prices[0]);
+    return padding.top + (1 - Math.max(0, Math.min(1, frac))) * plotHeight;
+  };
+
+  // 4. Overlays & Key Marker Lines
+
+  // Max GEX Magnet line (Green)
+  if (gexData.max_gex_spot) {
+    const yMax = getYFromPrice(gexData.max_gex_spot);
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = "#10b981";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, yMax);
+    ctx.lineTo(padding.left + plotWidth, yMax);
+    ctx.stroke();
+
+    // Badge on right margin
+    drawPillBadge(ctx, padding.left + plotWidth + 6, yMax, "MAX " + formatUSD(gexData.max_gex_at_atm), "#10b981", "#064e3b");
+    ctx.restore();
+  }
+
+  // Min GEX Volatility Valley line (Rose/Magenta)
+  if (gexData.min_gex_spot) {
+    const yMin = getYFromPrice(gexData.min_gex_spot);
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = "#f43f5e";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, yMin);
+    ctx.lineTo(padding.left + plotWidth, yMin);
+    ctx.stroke();
+
+    // Badge on right margin
+    drawPillBadge(ctx, padding.left + plotWidth + 6, yMin, "MIN " + formatUSD(gexData.min_gex_at_atm), "#f43f5e", "#4c0519");
+    ctx.restore();
+  }
+
+  // Current Spot Price Line (Amber)
+  const ySpot = getYFromPrice(gexData.current_spot);
+  ctx.save();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = "#f59e0b";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(padding.left, ySpot);
+  ctx.lineTo(padding.left + plotWidth, ySpot);
+  ctx.stroke();
+
+  // Floating Badge on right margin
+  drawPillBadge(ctx, padding.left + plotWidth + 6, ySpot, "P: " + formatPrice(gexData.current_spot), "#f59e0b", "#451a03");
+  ctx.restore();
+
+  // Current ATM IV Line (Sky Blue)
+  const xIv = getXFromIv(gexData.current_iv);
+  ctx.save();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = "#38bdf8";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(xIv, padding.top);
+  ctx.lineTo(xIv, padding.top + plotHeight);
+  ctx.stroke();
+
+  // Floating Badge at top
+  drawPillBadge(ctx, xIv, padding.top - 12, "IV: " + gexData.current_iv.toFixed(1) + "%", "#38bdf8", "#082f49", true);
+  ctx.restore();
+
+  // Current Operating Point (Pulsing Target Dot)
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(xIv, ySpot, 6, 0, Math.PI * 2);
+  ctx.fillStyle = "#38bdf8";
+  ctx.fill();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(xIv, ySpot, 11, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(56, 189, 248, 0.5)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+
+  // Canvas Border Frame
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(padding.left, padding.top, plotWidth, plotHeight);
+}
+
+function drawPillBadge(ctx, x, y, text, fgColor, bgColor, centerAlign = false) {
+  ctx.save();
+  ctx.font = "bold 10px monospace";
+  const metrics = ctx.measureText(text);
+  const pw = metrics.width + 10;
+  const ph = 18;
+  const bx = centerAlign ? x - pw / 2 : x;
+  const by = y - ph / 2;
+
+  // Background capsule
+  ctx.fillStyle = bgColor;
+  ctx.beginPath();
+  ctx.roundRect(bx, by, pw, ph, 4);
+  ctx.fill();
+
+  ctx.strokeStyle = fgColor;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Text
+  ctx.fillStyle = fgColor;
+  ctx.textAlign = centerAlign ? "center" : "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, centerAlign ? x : bx + 5, y);
+  ctx.restore();
+}
+
+// Mouse Move Interaction & Crosshair
+canvas.addEventListener('mousemove', (e) => {
+  if (!gexData || !renderMetrics) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  const { padding, plotWidth, plotHeight } = renderMetrics;
+
+  // Check if inside plot area
+  if (mouseX < padding.left || mouseX > padding.left + plotWidth ||
+      mouseY < padding.top || mouseY > padding.top + plotHeight) {
+    hud.classList.add('hidden');
+    renderHeatmap();
+    return;
+  }
+
+  // Re-draw base heatmap
+  renderHeatmap();
+
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+  ctx.lineWidth = 1;
+
+  // Vertical crosshair
+  ctx.beginPath();
+  ctx.moveTo(mouseX, padding.top);
+  ctx.lineTo(mouseX, padding.top + plotHeight);
+  ctx.stroke();
+
+  // Horizontal crosshair
+  ctx.beginPath();
+  ctx.moveTo(padding.left, mouseY);
+  ctx.lineTo(padding.left + plotWidth, mouseY);
+  ctx.stroke();
+  ctx.restore();
+
+  // Calculate simulated Spot and IV at cursor
+  const ivFrac = (mouseX - padding.left) / plotWidth;
+  const pFrac = 1 - (mouseY - padding.top) / plotHeight;
+
+  const prices = gexData.prices;
+  const ivs = gexData.ivs;
+  const simIv = ivs[0] + ivFrac * (ivs[ivs.length - 1] - ivs[0]);
+  const simSpot = prices[0] + pFrac * (prices[prices.length - 1] - prices[0]);
+
+  // Bilinear interpolation for GEX value
+  const pIdxExact = pFrac * (prices.length - 1);
+  const ivIdxExact = ivFrac * (ivs.length - 1);
+
+  const p0 = Math.floor(pIdxExact);
+  const p1 = Math.min(prices.length - 1, p0 + 1);
+  const v0 = Math.floor(ivIdxExact);
+  const v1 = Math.min(ivs.length - 1, v0 + 1);
+
+  const pWeight = pIdxExact - p0;
+  const vWeight = ivIdxExact - v0;
+
+  const g00 = gexData.matrix[p0][v0];
+  const g01 = gexData.matrix[p0][v1];
+  const g10 = gexData.matrix[p1][v0];
+  const g11 = gexData.matrix[p1][v1];
+
+  const interpGex = (1 - pWeight) * ((1 - vWeight) * g00 + vWeight * g01) +
+                    pWeight * ((1 - vWeight) * g10 + vWeight * g11);
+
+  // Update HUD Card
+  hud.classList.remove('hidden');
+
+  // Positioning HUD near cursor without overflowing
+  const hudWidth = 280;
+  const hudHeight = 150;
+  let posX = mouseX + 18;
+  let posY = mouseY - 20;
+
+  if (posX + hudWidth > rect.width - 20) {
+    posX = mouseX - hudWidth - 18;
+  }
+  if (posY + hudHeight > rect.height - 20) {
+    posY = rect.height - hudHeight - 20;
+  }
+  if (posY < 10) posY = 10;
+
+  hud.style.left = posX + "px";
+  hud.style.top = posY + "px";
+
+  document.getElementById('hudSpot').textContent = formatPrice(simSpot);
+  const spotDiff = ((simSpot - gexData.current_spot) / gexData.current_spot * 100).toFixed(1);
+  document.getElementById('hudSpotDiff').textContent = (spotDiff > 0 ? "+" : "") + spotDiff + "% จาก Spot";
+
+  document.getElementById('hudIv').textContent = simIv.toFixed(1) + "%";
+  const ivDiff = (simIv - gexData.current_iv).toFixed(1);
+  document.getElementById('hudIvDiff').textContent = (ivDiff > 0 ? "+" : "") + ivDiff + "% จาก ATM";
+
+  const hudGex = document.getElementById('hudGex');
+  const hudRegimeBadge = document.getElementById('hudRegimeBadge');
+  const hudActionText = document.getElementById('hudActionText');
+
+  hudGex.textContent = formatUSD(interpGex) + " / 1% move";
+
+  if (interpGex >= 0) {
+    hudGex.className = "font-bold text-sm font-mono text-emerald-400";
+    hudRegimeBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40";
+    hudRegimeBadge.textContent = "🟢 Long Gamma";
+    hudActionText.textContent = "⚡ Dealer Action: ซื้อเมื่อราคาตก / ขายเมื่อราคาขึ้น ช่วยลดความผันผวนและดูดราคาเข้าสู่ Strike";
+  } else {
+    hudGex.className = "font-bold text-sm font-mono text-rose-400";
+    hudRegimeBadge.className = "px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40";
+    hudRegimeBadge.textContent = "🟣 Short Gamma";
+    hudActionText.textContent = "⚠️ Dealer Action: ต้องเทขายคัทเมื่อลง / ไล่ซื้อเมื่อขึ้น ขยายความผันผวน มีโอกาสเกิด Rollercoaster";
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  hud.classList.add('hidden');
+  renderHeatmap();
+});
+
+// Responsive resize
+window.addEventListener('resize', () => {
+  renderHeatmap();
+});
+
+// Initial boot
+document.addEventListener('DOMContentLoaded', () => {
+  fetchGexPlusData();
+});
+</script>
+{% endblock %}
