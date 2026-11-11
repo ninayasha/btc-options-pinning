@@ -3,6 +3,7 @@ from src.options_math import (
     bs_gamma,
     calculate_gex_per_strike,
     calculate_gamma_flip,
+    calculate_gex_plus_matrix,
 )
 
 
@@ -60,3 +61,42 @@ def test_gamma_flip_no_crossing():
     flip = calculate_gamma_flip(spot, strikes_data, t_years)
     # No crossing within +/- 15%
     assert flip is None
+
+
+def test_gex_plus_matrix_computation():
+    spot = 80000.0
+    t_years = 5.0 / 365.0
+    strikes_data = [
+        {"strike": 75000.0, "call_oi": 50.0, "put_oi": 500.0, "call_iv": 45.0, "put_iv": 45.0},
+        {"strike": 80000.0, "call_oi": 300.0, "put_oi": 200.0, "call_iv": 42.0, "put_iv": 42.0},
+        {"strike": 85000.0, "call_oi": 600.0, "put_oi": 50.0, "call_iv": 48.0, "put_iv": 48.0},
+    ]
+
+    res = calculate_gex_plus_matrix(
+        spot=spot,
+        strikes_data=strikes_data,
+        t_years=t_years,
+        atm_iv=42.0,
+        price_steps=21,
+        iv_steps=15,
+        price_range_pct=0.15,
+        iv_range_pct=0.20,
+    )
+
+    assert len(res["prices"]) == 21
+    assert len(res["ivs"]) == 15
+    assert len(res["matrix"]) == 21
+    assert len(res["matrix"][0]) == 15
+    assert res["max_gex"] > 0
+    assert res["min_gex"] < 0
+    assert res["current_spot"] == spot
+    assert res["current_iv"] == 42.0
+    assert "max_gex_spot" in res
+    assert "min_gex_spot" in res
+    assert "current_net_gex" in res
+
+
+def test_gex_plus_empty_data():
+    res = calculate_gex_plus_matrix(0.0, [], 0.0, 0.0)
+    assert res["matrix"] == []
+    assert res["max_gex"] == 0.0
