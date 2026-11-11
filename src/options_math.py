@@ -1,6 +1,6 @@
 import math
 from datetime import date, datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 SQRT_2PI = math.sqrt(2.0 * math.pi)
 
@@ -413,3 +413,177 @@ def calculate_vol_metrics(
         "put25_iv": put25_iv,
         "skew_25d_rr": skew_25d_rr,
     }
+
+
+def calculate_gex_plus_matrix(
+    spot: float,
+    strikes_data: List[Dict[str, Any]],
+    t_years: float,
+    atm_iv: float,
+    price_steps: int = 41,
+    iv_steps: int = 25,
+    price_range_pct: float = 0.20,
+    iv_range_pct: float = 0.30,
+) -> Dict[str, Any]:
+    """
+    Kingfisher GEX+ 2D Simulation Engine.
+    Simulates dealer Net GEX across a 2D grid:
+      - Y-axis: Spot Price scenarios [spot * (1 - price_range_pct), spot * (1 + price_range_pct)]
+      - X-axis: ATM Implied Volatility scenarios [atm_iv * (1 - iv_range_pct), atm_iv * (1 + iv_range_pct)]
+
+    Formula per cell (S, sigma):
+      Net GEX(S, sigma) = sum_i [ (CallOI_i - PutOI_i) * bs_gamma(S, K_i, T_i, sigma_i) * S^2 * 0.01 ]
+    """
+    if spot <= 0 or not strikes_data:
+        return {
+            "prices": [],
+            "ivs": [],
+            "matrix": [],
+            "max_gex": 0.0,
+            "min_gex": 0.0,
+            "max_gex_spot": spot,
+            "min_gex_spot": spot,
+            "max_gex_at_atm": 0.0,
+            "min_gex_at_atm": 0.0,
+            "current_spot": spot,
+            "current_iv": atm_iv,
+            "current_net_gex": 0.0,
+            "gamma_flip_spot": None,
+        }
+
+    # Normalize ATM IV
+    atm_iv_pct = float(atm_iv) if (atm_iv and atm_iv > 0) else 45.0
+    if atm_iv_pct <= 1.5:  # e.g. 0.45 instead of 45.0
+        atm_iv_pct *= 100.0
+
+    # Extract valid strikes with non-zero OI
+    valid_strikes = []
+    for item in strikes_data:
+        k = float(item.get("strike") or 0.0)
+        c_oi = float(item.get("call_oi") or 0.0)
+        p_oi = float(item.get("put_oi") or 0.0)
+        net_oi = c_oi - p_oi
+        if abs(net_oi) < 1e-4 and c_oi == 0 and p_oi == 0:
+            continue
+
+        item_t = float(item.get("t_years") or t_years or 0.01)
+        if item_t <= 1e-5:
+            item_t = 0.5 / 8760.0  # min 30 minutes to expiry
+
+        # Skew ratio relative to ATM IV
+        c_iv = float(item.get("call_iv") or 0.0)
+        p_iv = float(item.get("put_iv") or 0.0)
+        if c_iv > 0 and p_iv > 0:
+            base_iv = (c_iv + p_iv) / 2.0
+        else:
+            base_iv = c_iv if c_iv > 0 else (p_iv if p_iv > 0 else atm_iv_pct)
+
+        skew_ratio = max(0.4, min(2.5, base_iv / atm_iv_pct if atm_iv_pct > 0 else 1.0))
+        valid_strikes.append((k, net_oi, skew_ratio, item_t))
+
+    if not valid_strikes:
+        return {
+            "prices": [],
+            "ivs": [],
+            "matrix": [],
+            "max_gex": 0.0,
+            "min_gex": 0.0,
+            "max_gex_spot": spot,
+            "min_gex_spot": spot,
+            "max_gex_at_atm": 0.0,
+            "min_gex_at_atm": 0.0,
+            "current_spot": spot,
+            "current_iv": atm_iv_pct,
+            "current_net_gex": 0.0,
+            "gamma_flip_spot": None,
+        }
+
+    # Generate Price Grid (Y-axis: bottom to top)
+    p_min = round(spot * (1.0 - price_range_pct), -2)
+    p_max = round(spot * (1.0 + price_range_pct), -2)
+    p_step = (p_max - p_min) / max(1, price_steps - 1)
+    prices = [round(p_min + i * p_step, 1) for i in range(price_steps)]
+
+    # Generate IV Grid (X-axis: left to right, in percent)
+    iv_min = max(5.0, round(atm_iv_pct * (1.0 - iv_range_pct), 1))
+    iv_max = min(250.0, round(atm_iv_pct * (1.0 + iv_range_pct), 1))
+    iv_step = (iv_max - iv_min) / max(1, iv_steps - 1)
+    ivs = [round(iv_min + j * iv_step, 1) for j in range(iv_steps)]
+
+    # Matrix: matrix[price_idx][iv_idx]
+    matrix = []
+    global_max_gex = -float("inf")
+    global_min_gex = float("inf")
+
+    # Pre-calculate IV decimals
+    iv_decimals = [iv_val / 100.0 for iv_val in ivs]
+
+    for p in prices:
+        p_mult = p * p * 0.01
+        row = []
+        for iv_dec in iv_decimals:
+            cell_net_gex = 0.0
+            for k, net_oi, skew, strike_t in valid_strikes:
+                eff_iv = max(0.04, iv_dec * skew)
+                gamma = bs_gamma(p, k, strike_t, eff_iv)
+                cell_net_gex += net_oi * gamma * p_mult
+
+            cell_val = round(cell_net_gex, 2)
+            row.append(cell_val)
+            if cell_val > global_max_gex:
+                global_max_gex = cell_val
+            if cell_val < global_min_gex:
+                global_min_gex = cell_val
+        matrix.append(row)
+
+    # Find closest IV column to current ATM IV
+    closest_iv_idx = min(range(len(ivs)), key=lambda j: abs(ivs[j] - atm_iv_pct))
+
+    # In current IV column, find max and min GEX prices (Magnet level & Acceleration zone)
+    col_at_current_iv = [matrix[p_idx][closest_iv_idx] for p_idx in range(len(prices))]
+    max_p_idx = max(range(len(prices)), key=lambda p: col_at_current_iv[p])
+    min_p_idx = min(range(len(prices)), key=lambda p: col_at_current_iv[p])
+    max_gex_spot = prices[max_p_idx]
+    min_gex_spot = prices[min_p_idx]
+
+    # Current Net GEX at exact spot and ATM IV
+    curr_mult = spot * spot * 0.01
+    curr_iv_dec = atm_iv_pct / 100.0
+    current_net_gex = 0.0
+    for k, net_oi, skew, strike_t in valid_strikes:
+        gamma = bs_gamma(spot, k, strike_t, max(0.04, curr_iv_dec * skew))
+        current_net_gex += net_oi * gamma * curr_mult
+    current_net_gex = round(current_net_gex, 2)
+
+    # Find Gamma Flip at current IV (zero crossing)
+    gamma_flip_spot = None
+    for p_idx in range(len(prices) - 1):
+        g1 = col_at_current_iv[p_idx]
+        g2 = col_at_current_iv[p_idx + 1]
+        p1 = prices[p_idx]
+        p2 = prices[p_idx + 1]
+        if g1 == 0:
+            gamma_flip_spot = p1
+            break
+        elif (g1 > 0 and g2 < 0) or (g1 < 0 and g2 > 0):
+            denom = g2 - g1
+            if denom != 0:
+                gamma_flip_spot = round(p1 - g1 * (p2 - p1) / denom, 1)
+            break
+
+    return {
+        "prices": prices,
+        "ivs": ivs,
+        "matrix": matrix,
+        "max_gex": global_max_gex,
+        "min_gex": global_min_gex,
+        "max_gex_spot": max_gex_spot,
+        "min_gex_spot": min_gex_spot,
+        "max_gex_at_atm": col_at_current_iv[max_p_idx],
+        "min_gex_at_atm": col_at_current_iv[min_p_idx],
+        "current_spot": spot,
+        "current_iv": round(atm_iv_pct, 2),
+        "current_net_gex": current_net_gex,
+        "gamma_flip_spot": gamma_flip_spot,
+    }
+
