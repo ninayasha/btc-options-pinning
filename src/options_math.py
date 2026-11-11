@@ -420,19 +420,19 @@ def calculate_gex_plus_matrix(
     strikes_data: List[Dict[str, Any]],
     t_years: float,
     atm_iv: float,
-    price_steps: int = 41,
-    iv_steps: int = 25,
+    price_steps: int = 61,
+    iv_steps: int = 31,
     price_range_pct: float = 0.20,
     iv_range_pct: float = 0.30,
 ) -> Dict[str, Any]:
     """
-    Kingfisher GEX+ 2D Simulation Engine.
+    Kingfisher GEX+ Strike-Resolved 2D Simulation Engine.
     Simulates dealer Net GEX across a 2D grid:
       - Y-axis: Spot Price scenarios [spot * (1 - price_range_pct), spot * (1 + price_range_pct)]
       - X-axis: ATM Implied Volatility scenarios [atm_iv * (1 - iv_range_pct), atm_iv * (1 + iv_range_pct)]
 
-    Formula per cell (S, sigma):
-      Net GEX(S, sigma) = sum_i [ (CallOI_i - PutOI_i) * bs_gamma(S, K_i, T_i, sigma_i) * S^2 * 0.01 ]
+    Each major strike creates a localized horizontal laser band that diffuses across IV,
+    with empty spaces between strikes remaining transparent.
     """
     if spot <= 0 or not strikes_data:
         return {
@@ -456,8 +456,11 @@ def calculate_gex_plus_matrix(
     if atm_iv_pct <= 1.5:  # e.g. 0.45 instead of 45.0
         atm_iv_pct *= 100.0
 
-    # Extract valid strikes with non-zero OI
-    valid_strikes = []
+    # Group contracts by strike price
+    from collections import defaultdict
+    strikes_by_k = defaultdict(list)
+    total_valid_contracts = 0
+
     for item in strikes_data:
         k = float(item.get("strike") or 0.0)
         c_oi = float(item.get("call_oi") or 0.0)
@@ -479,9 +482,10 @@ def calculate_gex_plus_matrix(
             base_iv = c_iv if c_iv > 0 else (p_iv if p_iv > 0 else atm_iv_pct)
 
         skew_ratio = max(0.4, min(2.5, base_iv / atm_iv_pct if atm_iv_pct > 0 else 1.0))
-        valid_strikes.append((k, net_oi, skew_ratio, item_t))
+        strikes_by_k[k].append((net_oi, item_t, skew_ratio))
+        total_valid_contracts += 1
 
-    if not valid_strikes:
+    if not strikes_by_k:
         return {
             "prices": [],
             "ivs": [],
@@ -510,25 +514,39 @@ def calculate_gex_plus_matrix(
     iv_step = (iv_max - iv_min) / max(1, iv_steps - 1)
     ivs = [round(iv_min + j * iv_step, 1) for j in range(iv_steps)]
 
-    # Matrix: matrix[price_idx][iv_idx]
+    # 1. Precalculate GEX for each unique strike across all IVs
+    strike_gex_by_iv = {}
+    for k, contracts in strikes_by_k.items():
+        gex_row = []
+        k_mult = k * k * 0.01
+        for iv in ivs:
+            iv_dec = iv / 100.0
+            tot_k = 0.0
+            for net_oi, strike_t, skew in contracts:
+                eff_iv = max(0.04, iv_dec * skew)
+                denom = math.sqrt(2.0 * math.pi) * k * eff_iv * math.sqrt(strike_t)
+                gamma_k = 1.0 / denom if denom > 0 else 0.0
+                tot_k += net_oi * gamma_k * k_mult
+            gex_row.append(tot_k)
+        strike_gex_by_iv[k] = gex_row
+
+    # 2. Build 2D Matrix with localized strike kernel (Kingfisher laser bands)
     matrix = []
     global_max_gex = -float("inf")
     global_min_gex = float("inf")
 
-    # Pre-calculate IV decimals
-    iv_decimals = [iv_val / 100.0 for iv_val in ivs]
-
     for p in prices:
-        p_mult = p * p * 0.01
         row = []
-        for iv_dec in iv_decimals:
-            cell_net_gex = 0.0
-            for k, net_oi, skew, strike_t in valid_strikes:
-                eff_iv = max(0.04, iv_dec * skew)
-                gamma = bs_gamma(p, k, strike_t, eff_iv)
-                cell_net_gex += net_oi * gamma * p_mult
+        for iv_idx, iv in enumerate(ivs):
+            w = max(250.0, 380.0 * (iv / atm_iv_pct))
+            p_val = 0.0
+            for k, gex_row in strike_gex_by_iv.items():
+                dist = abs(p - k)
+                if dist < 3.0 * w:
+                    kernel = math.exp(-0.5 * (dist / w) ** 2)
+                    p_val += gex_row[iv_idx] * kernel
 
-            cell_val = round(cell_net_gex, 2)
+            cell_val = round(p_val, 2)
             row.append(cell_val)
             if cell_val > global_max_gex:
                 global_max_gex = cell_val
@@ -550,9 +568,10 @@ def calculate_gex_plus_matrix(
     curr_mult = spot * spot * 0.01
     curr_iv_dec = atm_iv_pct / 100.0
     current_net_gex = 0.0
-    for k, net_oi, skew, strike_t in valid_strikes:
-        gamma = bs_gamma(spot, k, strike_t, max(0.04, curr_iv_dec * skew))
-        current_net_gex += net_oi * gamma * curr_mult
+    for k, contracts in strikes_by_k.items():
+        for net_oi, strike_t, skew in contracts:
+            gamma = bs_gamma(spot, k, strike_t, max(0.04, curr_iv_dec * skew))
+            current_net_gex += net_oi * gamma * curr_mult
     current_net_gex = round(current_net_gex, 2)
 
     # Find Gamma Flip at current IV (zero crossing)
