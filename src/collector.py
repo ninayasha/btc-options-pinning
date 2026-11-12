@@ -4,7 +4,7 @@ import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from src.config import BKK_TZ, RAW_DIR
+from src.config import BKK_TZ, RAW_DIR, DB_PATH, ETH_DB_PATH
 from src.db import get_db, log_execution
 from src.deribit_client import DeribitClient
 from src.events import fetch_forexfactory_events
@@ -90,28 +90,33 @@ def find_target_expiries(instruments: List[Dict[str, Any]], ref_dt_bkk: datetime
     }
 
 
-def run_snapshot(label: str = "manual") -> Dict[str, Any]:
+def run_snapshot(label: str = "manual", currency: str = "BTC", auto_backup: bool = True) -> Dict[str, Any]:
     """
-    Execute a snapshot cycle:
+    Execute a snapshot cycle for BTC or ETH:
     1. Fetch Deribit public data for ALL instruments
     2. Process and save ALL active future expiries (including today, weekly, monthly, quarterly, and all upcoming expiries)
     3. Calculate OI change vs previous snapshot for each expiry
     4. Save to SQLite and raw JSON
     """
+    currency = currency.upper()
+    index_name = "btc_usd" if currency == "BTC" else "eth_usd"
+    db_path = DB_PATH if currency == "BTC" else ETH_DB_PATH
+    
     ref_dt_bkk = datetime.now(BKK_TZ)
     ref_time_str = ref_dt_bkk.strftime("%Y-%m-%d %H:%M:%S")
     file_ts = ref_dt_bkk.strftime("%Y%m%d_%H%M%S")
+    raw_prefix = f"{file_ts}_{label}" if currency == "BTC" else f"eth_{file_ts}_{label}"
 
     client = DeribitClient()
 
     try:
         # Step 1: Deribit API Calls
-        index_data = client.get_index_price("btc_usd")
+        index_data = client.get_index_price(index_name)
         spot = float(index_data["index_price"])
 
-        all_instruments = client.get_instruments("BTC", "option", expired=False)
-        book_summary = client.get_book_summary_by_currency("BTC", "option")
-        dvol = client.get_dvol("BTC")
+        all_instruments = client.get_instruments(currency, "option", expired=False)
+        book_summary = client.get_book_summary_by_currency(currency, "option")
+        dvol = client.get_dvol(currency)
 
         book_map = {item["instrument_name"]: item for item in book_summary}
 
@@ -140,7 +145,7 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
         processed_expiries = []
         primary_snap_info = {}
 
-        with get_db() as conn:
+        with get_db(db_path) as conn:
             for exp_ms in all_expiries_ms:
                 exp_dt_bkk = datetime.fromtimestamp(exp_ms / 1000.0, tz=BKK_TZ)
                 cur_exp_date = exp_dt_bkk.date()
@@ -344,7 +349,7 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
                     "put2_strike": top_strikes["put2_strike"],
                     "put2_oi": top_strikes["put2_oi"],
                     "top5_strikes": top5_str,
-                    "raw_file": f"data/raw/{file_ts}_{label}.json",
+                    "raw_file": f"data/raw/{raw_prefix}.json",
                     "expiry_type": expiry_type,
                     "prev_snapshot_time_bkk": prev_snapshot_time_bkk,
                     "prev_label": prev_label,
@@ -507,10 +512,11 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
             conn.commit()
 
         # Step 4: Save raw JSON dump
-        raw_filename = f"{file_ts}_{label}_all_expiries.json"
+        raw_filename = f"{raw_prefix}_all_expiries.json"
         raw_filepath = RAW_DIR / raw_filename
         raw_dump = {
             "snapshot_time_bkk": ref_dt_bkk.isoformat(),
+            "currency": currency,
             "label": label,
             "spot": spot,
             "dvol": dvol,
@@ -520,11 +526,12 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
         with open(raw_filepath, "w", encoding="utf-8") as f:
             json.dump(raw_dump, f)
 
-        # Step 5: Fetch ForexFactory events
-        try:
-            fetch_forexfactory_events()
-        except Exception as e:
-            logger.warning(f"Error fetching ForexFactory: {e}")
+        # Step 5: Fetch ForexFactory events (only for BTC cycle)
+        if currency == "BTC":
+            try:
+                fetch_forexfactory_events()
+            except Exception as e:
+                logger.warning(f"Error fetching ForexFactory: {e}")
 
         # Step 6: Log execution
         log_execution(
@@ -532,16 +539,18 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
             label=label,
             action="snapshot",
             status="SUCCESS",
-            message=f"Processed ALL {len(processed_expiries)} active expiries: {', '.join(processed_expiries[:5])}... Spot: {spot:.2f}",
+            message=f"[{currency}] Processed ALL {len(processed_expiries)} active expiries: {', '.join(processed_expiries[:5])}... Spot: {spot:.2f}",
             fallback_used=0,
+            db_path=db_path,
         )
 
         # Step 7: Auto-backup database to Google Drive (Hourly master sync)
-        try:
-            from src.gdrive_backup import backup_database
-            backup_database(create_archive=False)
-        except Exception as e:
-            logger.warning(f"Google Drive auto-backup error: {e}")
+        if auto_backup:
+            try:
+                from src.gdrive_backup import backup_all_databases
+                backup_all_databases(create_archive=False)
+            except Exception as e:
+                logger.warning(f"Google Drive auto-backup error: {e}")
 
         # Step 8: Invalidate in-memory cache for instant fresh data
         try:
@@ -552,6 +561,7 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
 
         return {
             "status": "success",
+            "currency": currency,
             "snapshot_time_bkk": ref_time_str,
             "expiries_count": len(processed_expiries),
             "expiries": processed_expiries,
@@ -559,13 +569,43 @@ def run_snapshot(label: str = "manual") -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Snapshot failed: {e}", exc_info=True)
+        logger.error(f"Snapshot failed for {currency}: {e}", exc_info=True)
         log_execution(
             run_time_bkk=ref_time_str,
             label=label,
             action="snapshot",
             status="ERROR",
-            message=str(e),
+            message=f"[{currency}] {e}",
             fallback_used=0,
+            db_path=db_path,
         )
         raise e
+
+
+def run_btc_snapshot(label: str = "manual", auto_backup: bool = True) -> Dict[str, Any]:
+    """Run BTC options snapshot."""
+    return run_snapshot(label=label, currency="BTC", auto_backup=auto_backup)
+
+
+def run_eth_snapshot(label: str = "manual", auto_backup: bool = True) -> Dict[str, Any]:
+    """Run ETH options snapshot."""
+    return run_snapshot(label=label, currency="ETH", auto_backup=auto_backup)
+
+
+def run_all_snapshots(label: str = "manual", auto_backup: bool = True) -> Dict[str, Any]:
+    """Run both BTC and ETH snapshots, then sync all to Google Drive."""
+    res_btc = run_snapshot(label=label, currency="BTC", auto_backup=False)
+    try:
+        res_eth = run_snapshot(label=label, currency="ETH", auto_backup=False)
+    except Exception as e:
+        logger.error(f"ETH snapshot failed in run_all_snapshots: {e}")
+        res_eth = {"status": "error", "error": str(e)}
+
+    if auto_backup:
+        try:
+            from src.gdrive_backup import backup_all_databases
+            backup_all_databases(create_archive=False)
+        except Exception as e:
+            logger.warning(f"Google Drive auto-backup error in run_all_snapshots: {e}")
+
+    return {"btc": res_btc, "eth": res_eth}
