@@ -7,6 +7,7 @@ DATA_DIR = BASE_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 LOGS_DIR = DATA_DIR / "logs"
 DB_PATH = DATA_DIR / "btc_pinning.db"
+ETH_DB_PATH = DATA_DIR / "eth_pinning.db"
 
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
