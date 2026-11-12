@@ -1,16 +1,21 @@
 import sqlite3
+from pathlib import Path
 from typing import Any, Dict, List, Optional
-from src.config import DB_PATH
+from src.config import DB_PATH, ETH_DB_PATH
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
+def get_db(db_path: Optional[Path] = None):
+    conn = sqlite3.connect(db_path or DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db():
-    with get_db() as conn:
+def get_eth_db():
+    return get_db(ETH_DB_PATH)
+
+
+def init_db(db_path: Optional[Path] = None):
+    with get_db(db_path or DB_PATH) as conn:
         cursor = conn.cursor()
 
         # 1. snapshots
@@ -291,9 +296,13 @@ def init_db():
         conn.commit()
 
 
-def log_execution(run_time_bkk: str, label: str, action: str, status: str, message: str, fallback_used: int = 0):
+def init_eth_db():
+    return init_db(ETH_DB_PATH)
+
+
+def log_execution(run_time_bkk: str, label: str, action: str, status: str, message: str, fallback_used: int = 0, db_path: Optional[Path] = None):
     try:
-        with get_db() as conn:
+        with get_db(db_path or DB_PATH) as conn:
             conn.execute(
                 """
                 INSERT INTO execution_logs (run_time_bkk, label, action, status, message, fallback_used)
