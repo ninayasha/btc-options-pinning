@@ -38,13 +38,18 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.on_event("startup")
 def on_startup():
-    from src.gdrive_backup import restore_database_if_missing
+    from src.gdrive_backup import restore_all_databases_if_missing
     try:
-        restore_res = restore_database_if_missing()
+        restore_res = restore_all_databases_if_missing()
         print(f"[STARTUP] Google Drive restore check: {restore_res}")
     except Exception as e:
         print(f"[STARTUP WARNING] Google Drive restore check failed: {e}")
     init_db()
+    try:
+        from src.db import init_eth_db
+        init_eth_db()
+    except Exception as e:
+        print(f"[STARTUP WARNING] ETH DB init failed: {e}")
     try:
         from src.paper_trade import init_paper_trade_tables, open_active_paper_trades
         init_paper_trade_tables()
@@ -80,21 +85,19 @@ def api_scheduler_check_now():
 
 @app.post("/api/backup/gdrive")
 def api_backup_gdrive():
-    """Manually trigger immediate backup of btc_pinning.db to user's Google Drive."""
-    from src.gdrive_backup import backup_database
-    res = backup_database()
+    """Manually trigger immediate backup of all databases (BTC & ETH) to user's Google Drive."""
+    from src.gdrive_backup import backup_all_databases
+    res = backup_all_databases()
     if not res.get("success"):
-        raise HTTPException(status_code=500, detail=res.get("error", "Backup failed"))
+        raise HTTPException(status_code=500, detail=str(res.get("details", "Backup failed")))
     return res
 
 
 @app.post("/api/restore/gdrive")
 def api_restore_gdrive():
-    """Manually trigger restoration of btc_pinning.db from Google Drive."""
-    from src.gdrive_backup import restore_database_if_missing
-    res = restore_database_if_missing(force=True)
-    if not res.get("restored"):
-        raise HTTPException(status_code=500, detail=res.get("error", "Restore failed"))
+    """Manually trigger restoration of databases from Google Drive."""
+    from src.gdrive_backup import restore_all_databases_if_missing
+    res = restore_all_databases_if_missing(force=True)
     return res
 
 
