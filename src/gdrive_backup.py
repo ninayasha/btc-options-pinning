@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
-from src.config import BASE_DIR, BKK_TZ, DB_PATH
+from src.config import BASE_DIR, BKK_TZ, DB_PATH, ETH_DB_PATH
 
 logger = logging.getLogger("gdrive_backup")
 
@@ -142,9 +142,9 @@ def ensure_backup_folder(access_token: str) -> Optional[str]:
 
 def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = False) -> Dict[str, Any]:
     """
-    Backs up the SQLite database to Google Drive:
-    1. Keeps a master 'btc_pinning.db' updated in place on every hourly run.
-    2. Keeps a timestamped archive copy 'btc_pinning_YYYYMMDD_HHMM.db' when create_archive=True (e.g. daily settlement).
+    Backs up a SQLite database (BTC or ETH) to Google Drive:
+    1. Keeps a master '<stem>.db' updated in place on every hourly run.
+    2. Keeps a timestamped archive copy '<stem>_YYYYMMDD_HHMM.db' when create_archive=True (e.g. daily settlement).
     """
     target_path = Path(db_file_path) if db_file_path else DB_PATH
     if not target_path.exists():
@@ -162,10 +162,12 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
     now_bkk = datetime.now(BKK_TZ).strftime("%Y%m%d_%H%M%S")
     db_bytes = target_path.read_bytes()
     size_kb = round(len(db_bytes) / 1024, 2)
+    file_name = target_path.name
+    file_stem = target_path.stem
 
     try:
-        # 1. Update or create the main 'btc_pinning.db'
-        q = f"name = 'btc_pinning.db' and '{folder_id}' in parents and trashed = false"
+        # 1. Update or create the main master database file (e.g. btc_pinning.db or eth_pinning.db)
+        q = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
         r_find = httpx.get(
             "https://www.googleapis.com/drive/v3/files",
             headers=headers,
@@ -191,14 +193,14 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
                 action = "updated" if r_up.status_code == 200 else "failed"
         else:
             meta = {
-                "name": "btc_pinning.db",
+                "name": file_name,
                 "parents": [folder_id],
-                "description": f"Master BTC Options Pinning Database (Updated {now_bkk})",
+                "description": f"Master {file_stem.upper()} Options Pinning Database (Updated {now_bkk})",
             }
             # Multipart upload
             files = {
                 "metadata": (None, json.dumps(meta), "application/json; charset=UTF-8"),
-                "file": ("btc_pinning.db", db_bytes, "application/x-sqlite3"),
+                "file": (file_name, db_bytes, "application/x-sqlite3"),
             }
             r_up = httpx.post(
                 "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
@@ -214,11 +216,11 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
         # 2. Upload timestamped archive snapshot only when requested (e.g. daily settlement)
         archive_name = "none"
         if create_archive:
-            archive_name = f"btc_pinning_{now_bkk}.db"
+            archive_name = f"{file_stem}_{now_bkk}.db"
             archive_meta = {
                 "name": archive_name,
                 "parents": [folder_id],
-                "description": f"Historical Archive Snapshot {now_bkk}",
+                "description": f"Historical Archive Snapshot {file_stem.upper()} {now_bkk}",
             }
             r_arch = httpx.post(
                 "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
@@ -230,10 +232,11 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
                 timeout=30.0,
             )
 
-        msg = f"Database successfully backed up to Google Drive ({action} master, archive: {archive_name}, {size_kb} KB)"
+        msg = f"Database {file_name} successfully backed up to Google Drive ({action} master, archive: {archive_name}, {size_kb} KB)"
         logger.info(msg)
         return {
             "success": True,
+            "file_name": file_name,
             "action": action,
             "size_kb": size_kb,
             "folder_id": folder_id,
@@ -242,30 +245,48 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
         }
 
     except Exception as e:
-        logger.error(f"Error during Google Drive database backup: {e}")
-        return {"success": False, "error": str(e)}
+        logger.error(f"Error during Google Drive database backup for {file_name}: {e}")
+        return {"success": False, "file_name": file_name, "error": str(e)}
+
+
+def backup_all_databases(create_archive: bool = False) -> Dict[str, Any]:
+    """
+    Backs up both BTC and ETH databases to Google Drive.
+    """
+    results = {}
+    if DB_PATH.exists():
+        results["BTC"] = backup_database(DB_PATH, create_archive=create_archive)
+    if ETH_DB_PATH.exists():
+        results["ETH"] = backup_database(ETH_DB_PATH, create_archive=create_archive)
+    
+    all_ok = all(r.get("success", False) for r in results.values())
+    return {
+        "success": all_ok,
+        "details": results,
+    }
 
 
 def restore_database_if_missing(db_file_path: Optional[Path] = None, force: bool = False) -> Dict[str, Any]:
     """
-    On cold startup (especially on Render cloud where disk might be wiped or contain stale git clone),
-    downloads the richest database from Google Drive if local database is missing,
+    Downloads database from Google Drive if local database is missing,
     has fewer than 10 snapshots, is significantly smaller than remote, or if running in Render cloud.
     """
     target_path = Path(db_file_path) if db_file_path else DB_PATH
+    file_name = target_path.name
+    file_stem = target_path.stem
 
     access_token = get_access_token()
     if not access_token:
-        return {"restored": False, "error": "No Google Drive access token available"}
+        return {"restored": False, "file_name": file_name, "error": "No Google Drive access token available"}
 
     folder_id = ensure_backup_folder(access_token)
     if not folder_id:
-        return {"restored": False, "error": "No backup folder found on Google Drive"}
+        return {"restored": False, "file_name": file_name, "error": "No backup folder found on Google Drive"}
 
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
-        # Find all db files in the backup folder
-        q = f"'{folder_id}' in parents and trashed = false and name contains '.db'"
+        # Find all db files matching this specific asset in the backup folder
+        q = f"'{folder_id}' in parents and trashed = false and name contains '{file_stem}'"
         r_find = httpx.get(
             "https://www.googleapis.com/drive/v3/files",
             headers=headers,
@@ -274,7 +295,7 @@ def restore_database_if_missing(db_file_path: Optional[Path] = None, force: bool
         )
         files = r_find.json().get("files", []) if r_find.status_code == 200 else []
         if not files:
-            return {"restored": False, "error": "No database backups found in Google Drive folder"}
+            return {"restored": False, "file_name": file_name, "error": f"No {file_stem} backups found in Google Drive folder"}
 
         # Find the richest database file (largest file size)
         best_file = max(files, key=lambda x: int(x.get("size", 0)))
@@ -297,7 +318,7 @@ def restore_database_if_missing(db_file_path: Optional[Path] = None, force: bool
         needs_restore = force or (not target_path.exists()) or (local_snapshots < 10) or (local_size < remote_size * 0.8) or bool(os.getenv("RENDER")) or bool(os.getenv("SPACE_ID"))
 
         if not needs_restore:
-            return {"restored": False, "reason": f"Local database is already healthy ({local_snapshots} snapshots, {round(local_size/1024, 1)} KB)."}
+            return {"restored": False, "file_name": file_name, "reason": f"Local {file_name} is already healthy ({local_snapshots} snapshots, {round(local_size/1024, 1)} KB)."}
 
         file_id = best_file["id"]
         download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
@@ -313,11 +334,19 @@ def restore_database_if_missing(db_file_path: Optional[Path] = None, force: bool
                 memory_cache.clear()
             except Exception:
                 pass
-            return {"restored": True, "size_kb": size_kb, "message": msg, "source_file": best_file["name"]}
+            return {"restored": True, "file_name": file_name, "size_kb": size_kb, "message": msg, "source_file": best_file["name"]}
         else:
-            return {"restored": False, "error": f"Failed downloading database: {r_down.status_code}"}
+            return {"restored": False, "file_name": file_name, "error": f"Failed downloading database: {r_down.status_code}"}
 
     except Exception as e:
-        logger.error(f"Error restoring database from Google Drive: {e}")
-        return {"restored": False, "error": str(e)}
-        return {"restored": False, "error": str(e)}
+        logger.error(f"Error restoring database {file_name} from Google Drive: {e}")
+        return {"restored": False, "file_name": file_name, "error": str(e)}
+
+
+def restore_all_databases_if_missing(force: bool = False) -> Dict[str, Any]:
+    """
+    Restores both BTC and ETH databases from Google Drive if missing or stale.
+    """
+    res_btc = restore_database_if_missing(DB_PATH, force=force)
+    res_eth = restore_database_if_missing(ETH_DB_PATH, force=force)
+    return {"btc": res_btc, "eth": res_eth}
