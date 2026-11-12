@@ -61,11 +61,24 @@ def check_and_run_hourly_tasks(source: str = "ping") -> dict:
 
             logger.info(f"[{source}] No snapshot found for {current_hour_prefix}xx. Taking '{label}' snapshot...")
             try:
-                run_snapshot(label=label)
-                actions_taken.append(f"snapshot_{label}")
+                run_snapshot(label=label, currency="BTC", auto_backup=False)
+                actions_taken.append(f"snapshot_btc_{label}")
             except Exception as e:
-                logger.error(f"[{source}] Hourly snapshot failed: {e}")
-                actions_taken.append(f"error_snapshot_{e}")
+                logger.error(f"[{source}] Hourly BTC snapshot failed: {e}")
+                actions_taken.append(f"error_snapshot_btc_{e}")
+
+            try:
+                run_snapshot(label=label, currency="ETH", auto_backup=False)
+                actions_taken.append(f"snapshot_eth_{label}")
+            except Exception as e:
+                logger.error(f"[{source}] Hourly ETH snapshot failed: {e}")
+                actions_taken.append(f"error_snapshot_eth_{e}")
+
+            try:
+                from src.gdrive_sync import upload_db_to_gdrive
+                upload_db_to_gdrive()
+            except Exception as g_err:
+                logger.warning(f"Google Drive sync warning: {g_err}")
 
         # 2. Check daily settlement (if >= 15:30 BKK)
         if now_bkk.hour > 15 or (now_bkk.hour == 15 and now_bkk.minute >= 30):
@@ -80,16 +93,29 @@ def check_and_run_hourly_tasks(source: str = "ping") -> dict:
             if settled_count == 0:
                 logger.info(f"[{source}] Missing daily settlement for {today_str}. Running settlement...")
                 try:
-                    run_settlement(today_str)
-                    actions_taken.append("settlement")
+                    run_settlement(today_str, currency="BTC")
+                    actions_taken.append("settlement_btc")
                     try:
                         from src.paper_trade import open_active_paper_trades
                         open_active_paper_trades()
                     except Exception as p_err:
                         logger.warning(f"Paper trade check warning: {p_err}")
                 except Exception as e:
-                    logger.error(f"[{source}] Daily settlement failed: {e}")
-                    actions_taken.append(f"error_settlement_{e}")
+                    logger.error(f"[{source}] Daily BTC settlement failed: {e}")
+                    actions_taken.append(f"error_settlement_btc_{e}")
+
+                try:
+                    run_settlement(today_str, currency="ETH")
+                    actions_taken.append("settlement_eth")
+                except Exception as e:
+                    logger.error(f"[{source}] Daily ETH settlement failed: {e}")
+                    actions_taken.append(f"error_settlement_eth_{e}")
+
+                try:
+                    from src.gdrive_sync import upload_db_to_gdrive
+                    upload_db_to_gdrive(create_archive=True)
+                except Exception as g_err:
+                    logger.warning(f"Google Drive sync warning: {g_err}")
 
         return {"status": "ok", "actions": actions_taken}
     finally:
@@ -98,43 +124,70 @@ def check_and_run_hourly_tasks(source: str = "ping") -> dict:
 
 
 def job_0600():
-    logger.info("Executing 06:00 scheduled snapshot (today's expiry)...")
+    logger.info("Executing 06:00 scheduled snapshot for BTC & ETH (today's expiry)...")
     try:
-        run_snapshot(label="0600")
+        run_snapshot(label="0600", currency="BTC", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in BTC 06:00 job: {e}")
+    try:
+        run_snapshot(label="0600", currency="ETH", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in ETH 06:00 job: {e}")
+    try:
         from src.gdrive_sync import upload_db_to_gdrive
         upload_db_to_gdrive()
     except Exception as e:
-        logger.error(f"Error in 06:00 job: {e}")
+        logger.error(f"Google Drive sync error in 06:00 job: {e}")
 
 
 def job_1530():
-    logger.info("Executing 15:30 scheduled settlement & snapshot (tomorrow's expiry)...")
+    logger.info("Executing 15:30 scheduled settlement & snapshot for BTC & ETH (tomorrow's expiry)...")
     ref_time_str = datetime.now(BKK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     # 1. Settle today's expiry
     try:
-        run_settlement()
+        run_settlement(currency="BTC")
     except Exception as e:
-        logger.error(f"Error in 15:30 settlement: {e}")
+        logger.error(f"Error in BTC 15:30 settlement: {e}")
         log_execution(ref_time_str, "1530", "settle", "ERROR", str(e))
+    try:
+        run_settlement(currency="ETH")
+    except Exception as e:
+        logger.error(f"Error in ETH 15:30 settlement: {e}")
 
     # 2. Snapshot tomorrow's expiry
     try:
-        run_snapshot(label="1530")
-        from src.gdrive_sync import upload_db_to_gdrive
-        upload_db_to_gdrive()
+        run_snapshot(label="1530", currency="BTC", auto_backup=False)
     except Exception as e:
-        logger.error(f"Error in 15:30 snapshot: {e}")
+        logger.error(f"Error in BTC 15:30 snapshot: {e}")
         log_execution(ref_time_str, "1530", "snapshot", "ERROR", str(e))
+    try:
+        run_snapshot(label="1530", currency="ETH", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in ETH 15:30 snapshot: {e}")
+
+    # 3. Upload all to Google Drive with archive
+    try:
+        from src.gdrive_sync import upload_db_to_gdrive
+        upload_db_to_gdrive(create_archive=True)
+    except Exception as e:
+        logger.error(f"Google Drive archive upload error in 15:30 job: {e}")
 
 
 def job_2100():
-    logger.info("Executing 21:00 scheduled snapshot (tomorrow's expiry)...")
+    logger.info("Executing 21:00 scheduled snapshot for BTC & ETH (tomorrow's expiry)...")
     try:
-        run_snapshot(label="2100")
+        run_snapshot(label="2100", currency="BTC", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in BTC 21:00 job: {e}")
+    try:
+        run_snapshot(label="2100", currency="ETH", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in ETH 21:00 job: {e}")
+    try:
         from src.gdrive_sync import upload_db_to_gdrive
         upload_db_to_gdrive()
     except Exception as e:
-        logger.error(f"Error in 21:00 job: {e}")
+        logger.error(f"Google Drive sync error in 21:00 job: {e}")
 
 
 def job_hourly():
@@ -149,13 +202,20 @@ def job_hourly():
         return
 
     label = f"hourly_{hour:02d}00"
-    logger.info(f"Executing hourly scheduled snapshot ({label})...")
+    logger.info(f"Executing hourly scheduled snapshot ({label}) for BTC & ETH...")
     try:
-        run_snapshot(label=label)
+        run_snapshot(label=label, currency="BTC", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in BTC hourly snapshot ({label}): {e}")
+    try:
+        run_snapshot(label=label, currency="ETH", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in ETH hourly snapshot ({label}): {e}")
+    try:
         from src.gdrive_sync import upload_db_to_gdrive
         upload_db_to_gdrive()
     except Exception as e:
-        logger.error(f"Error in hourly snapshot ({label}): {e}")
+        logger.error(f"Google Drive sync error in hourly snapshot ({label}): {e}")
 
 
 def init_scheduler():
@@ -170,23 +230,34 @@ def init_scheduler():
         logger.info("APScheduler started with hourly snapshots + milestone jobs (06:00, 15:30, 21:00 Asia/Bangkok).")
 
 
-def trigger_manual(action: str = "snapshot") -> dict:
-    """Manually trigger either a snapshot or settlement right now."""
+def trigger_manual(action: str = "snapshot", currency: str = "ALL") -> dict:
+    """Manually trigger either a snapshot or settlement right now (for BTC, ETH, or ALL)."""
+    target_currencies = ["BTC", "ETH"] if currency.upper() == "ALL" else [currency.upper()]
+    results = {}
+
     if action == "settle":
-        res = run_settlement()
+        for curr in target_currencies:
+            try:
+                results[curr] = run_settlement(currency=curr)
+            except Exception as e:
+                results[curr] = {"status": "error", "error": str(e)}
         try:
             from src.gdrive_sync import upload_db_to_gdrive
-            upload_db_to_gdrive()
+            upload_db_to_gdrive(create_archive=True)
         except Exception as e:
             logger.warning(f"Google Drive sync warning: {e}")
-        return res
+        return {"action": "settle", "results": results}
     else:
         now_bkk = datetime.now(BKK_TZ)
         label = f"manual_{now_bkk.strftime('%H%M')}"
-        res = run_snapshot(label=label)
+        for curr in target_currencies:
+            try:
+                results[curr] = run_snapshot(label=label, currency=curr, auto_backup=False)
+            except Exception as e:
+                results[curr] = {"status": "error", "error": str(e)}
         try:
             from src.gdrive_sync import upload_db_to_gdrive
             upload_db_to_gdrive()
         except Exception as e:
             logger.warning(f"Google Drive sync warning: {e}")
-        return res
+        return {"action": "snapshot", "label": label, "results": results}
