@@ -1,7 +1,7 @@
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
-from src.config import BKK_TZ
+from src.config import BKK_TZ, DB_PATH, ETH_DB_PATH
 from src.db import get_db, log_execution
 from src.deribit_client import DeribitClient
 from src.events import check_high_impact_between
@@ -10,14 +10,18 @@ from src.options_math import classify_expiry
 logger = logging.getLogger("settle")
 
 
-def run_settlement(target_date_str: Optional[str] = None) -> Dict[str, Any]:
+def run_settlement(target_date_str: Optional[str] = None, currency: str = "BTC") -> Dict[str, Any]:
     """
-    Settle expiry:
+    Settle expiry for BTC or ETH:
     1. Fetch delivery price from Deribit
     2. Find best snapshot (0600, or fallback 2100 of yesterday, or latest pre-expiry)
     3. Calculate all distances and hit-rates
     4. Save to expiry_results table
     """
+    currency = currency.upper()
+    index_name = "btc_usd" if currency == "BTC" else "eth_usd"
+    db_path = DB_PATH if currency == "BTC" else ETH_DB_PATH
+
     client = DeribitClient()
     ref_dt_bkk = datetime.now(BKK_TZ)
     run_time_str = ref_dt_bkk.strftime("%Y-%m-%d %H:%M:%S")
@@ -27,31 +31,26 @@ def run_settlement(target_date_str: Optional[str] = None) -> Dict[str, Any]:
         target_date_str = ref_dt_bkk.strftime("%Y-%m-%d")
 
     # Step 1: Fetch delivery prices
-    delivery_prices = client.get_delivery_prices("btc_usd", count=50)
+    delivery_prices = client.get_delivery_prices(index_name, count=50)
     delivery_map = {item["date"]: float(item["delivery_price"]) for item in delivery_prices}
 
     settlement_price = delivery_map.get(target_date_str)
     if settlement_price is None:
-        msg = f"Delivery price for {target_date_str} not yet available from Deribit."
+        msg = f"Delivery price for {target_date_str} ({currency}) not yet available from Deribit."
         logger.warning(msg)
-        log_execution(run_time_str, "1530", "settle", "ERROR", msg)
+        log_execution(run_time_str, "1530", "settle", "ERROR", msg, db_path=db_path)
         return {"status": "error", "message": msg}
 
     target_d = datetime.strptime(target_date_str, "%Y-%m-%d").date()
     expiry_type = classify_expiry(target_d)
 
     # Step 2: Find best snapshot
-    # Priority:
-    # 1. label == '0600' on the same day
-    # 2. label == '2100' on the day before
-    # 3. label == '1530' on the day before
-    # 4. Any snapshot strictly before 15:00 BKK on expiry date
     snapshot = None
     snapshot_used = None
     note = ""
     fallback_used = 0
 
-    with get_db() as conn:
+    with get_db(db_path) as conn:
         # Check 0600
         cur = conn.execute(
             """
@@ -286,21 +285,23 @@ def run_settlement(target_date_str: Optional[str] = None) -> Dict[str, Any]:
 
     log_execution(
         run_time_str, "1530", "settle", "SUCCESS",
-        f"Settled {target_date_str} at {settlement_price:.2f} using {snapshot_used}. Dist to Max Pain: {dist_max_pain_pct:+.2f}%",
+        f"[{currency}] Settled {target_date_str} at {settlement_price:.2f} using {snapshot_used}. Dist to Max Pain: {dist_max_pain_pct:+.2f}%",
         fallback_used=fallback_used,
+        db_path=db_path,
     )
 
-    # Settle paper trades and roll next active cycle
-    try:
-        from src.paper_trade import settle_active_paper_trades
-        settle_active_paper_trades(target_date_str, settlement_price)
-    except Exception as e:
-        logger.warning(f"Paper trade settlement error: {e}")
+    # Settle paper trades and roll next active cycle (only for BTC)
+    if currency == "BTC":
+        try:
+            from src.paper_trade import settle_active_paper_trades
+            settle_active_paper_trades(target_date_str, settlement_price)
+        except Exception as e:
+            logger.warning(f"Paper trade settlement error: {e}")
 
-    # Auto-backup database to Google Drive after settlement
+    # Auto-backup all databases to Google Drive after settlement
     try:
-        from src.gdrive_backup import backup_database
-        backup_database(create_archive=True)
+        from src.gdrive_backup import backup_all_databases
+        backup_all_databases(create_archive=True)
     except Exception as e:
         logger.warning(f"Google Drive auto-backup error after settlement: {e}")
 
@@ -313,6 +314,7 @@ def run_settlement(target_date_str: Optional[str] = None) -> Dict[str, Any]:
 
     return {
         "status": "success",
+        "currency": currency,
         "expiry_date": target_date_str,
         "settlement_price": settlement_price,
         "snapshot_used": snapshot_used,
@@ -321,3 +323,14 @@ def run_settlement(target_date_str: Optional[str] = None) -> Dict[str, Any]:
         "within_1pct_max_pain": within_1_mp,
         "settled_in_put1_call1_range": settled_in_range,
     }
+
+
+def run_all_settlements(target_date_str: Optional[str] = None) -> Dict[str, Any]:
+    """Run settlements for both BTC and ETH, archiving databases to Google Drive."""
+    res_btc = run_settlement(target_date_str=target_date_str, currency="BTC")
+    try:
+        res_eth = run_settlement(target_date_str=target_date_str, currency="ETH")
+    except Exception as e:
+        logger.error(f"ETH settlement failed in run_all_settlements: {e}")
+        res_eth = {"status": "error", "error": str(e)}
+    return {"btc": res_btc, "eth": res_eth}
