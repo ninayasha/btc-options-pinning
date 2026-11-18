@@ -8,6 +8,9 @@
   "tests/test_gex.py::test_gex_calculation",
   "tests/test_gex.py::test_gex_plus_empty_data",
   "tests/test_gex.py::test_gex_plus_matrix_computation",
+  "tests/test_ibit_collection.py::test_ibit_collection_isolation",
+  "tests/test_ibit_collection.py::test_ibit_db_schema",
+  "tests/test_ibit_collection.py::test_occ_pattern_regex",
   "tests/test_max_pain.py::test_calculate_max_pain_simple",
   "tests/test_max_pain.py::test_get_top_strikes"
 ]
