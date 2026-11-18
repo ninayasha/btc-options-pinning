@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
-from src.config import BASE_DIR, BKK_TZ, DB_PATH, ETH_DB_PATH
+from src.config import BASE_DIR, BKK_TZ, DB_PATH, ETH_DB_PATH, IBIT_DB_PATH
 
 logger = logging.getLogger("gdrive_backup")
 
@@ -176,6 +176,7 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
         )
         existing = r_find.json().get("files", []) if r_find.status_code == 200 else []
 
+        r_up = None
         if existing:
             remote_size = int(existing[0].get("size", 0))
             if remote_size > 2_000_000 and len(db_bytes) < (remote_size * 0.5):
@@ -210,7 +211,7 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
             )
             action = "created"
 
-        if r_up.status_code not in (200, 201):
+        if r_up is not None and r_up.status_code not in (200, 201):
             return {"success": False, "error": f"Upload failed: {r_up.text}"}
 
         # 2. Upload timestamped archive snapshot only when requested (e.g. daily settlement)
@@ -251,13 +252,15 @@ def backup_database(db_file_path: Optional[Path] = None, create_archive: bool = 
 
 def backup_all_databases(create_archive: bool = False) -> Dict[str, Any]:
     """
-    Backs up both BTC and ETH databases to Google Drive.
+    Backs up BTC, ETH, and IBIT databases to Google Drive.
     """
     results = {}
     if DB_PATH.exists():
         results["BTC"] = backup_database(DB_PATH, create_archive=create_archive)
     if ETH_DB_PATH.exists():
         results["ETH"] = backup_database(ETH_DB_PATH, create_archive=create_archive)
+    if IBIT_DB_PATH.exists():
+        results["IBIT"] = backup_database(IBIT_DB_PATH, create_archive=create_archive)
     
     all_ok = all(r.get("success", False) for r in results.values())
     return {
@@ -345,8 +348,9 @@ def restore_database_if_missing(db_file_path: Optional[Path] = None, force: bool
 
 def restore_all_databases_if_missing(force: bool = False) -> Dict[str, Any]:
     """
-    Restores both BTC and ETH databases from Google Drive if missing or stale.
+    Restores BTC, ETH, and IBIT databases from Google Drive if missing or stale.
     """
     res_btc = restore_database_if_missing(DB_PATH, force=force)
     res_eth = restore_database_if_missing(ETH_DB_PATH, force=force)
-    return {"btc": res_btc, "eth": res_eth}
+    res_ibit = restore_database_if_missing(IBIT_DB_PATH, force=force)
+    return {"btc": res_btc, "eth": res_eth, "ibit": res_ibit}
