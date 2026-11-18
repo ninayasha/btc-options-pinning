@@ -46,10 +46,11 @@ def on_startup():
         print(f"[STARTUP WARNING] Google Drive restore check failed: {e}")
     init_db()
     try:
-        from src.db import init_eth_db
+        from src.db import init_eth_db, init_ibit_db
         init_eth_db()
+        init_ibit_db()
     except Exception as e:
-        print(f"[STARTUP WARNING] ETH DB init failed: {e}")
+        print(f"[STARTUP WARNING] ETH/IBIT DB init failed: {e}")
     try:
         from src.paper_trade import init_paper_trade_tables, open_active_paper_trades
         init_paper_trade_tables()
