@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from src.config import DB_PATH, ETH_DB_PATH
+from src.config import DB_PATH, ETH_DB_PATH, IBIT_DB_PATH
 
 
 def get_db(db_path: Optional[Path] = None):
@@ -12,6 +12,10 @@ def get_db(db_path: Optional[Path] = None):
 
 def get_eth_db():
     return get_db(ETH_DB_PATH)
+
+
+def get_ibit_db():
+    return get_db(IBIT_DB_PATH)
 
 
 def init_db(db_path: Optional[Path] = None):
@@ -298,6 +302,10 @@ def init_db(db_path: Optional[Path] = None):
 
 def init_eth_db():
     return init_db(ETH_DB_PATH)
+
+
+def init_ibit_db():
+    return init_db(IBIT_DB_PATH)
 
 
 def log_execution(run_time_bkk: str, label: str, action: str, status: str, message: str, fallback_used: int = 0, db_path: Optional[Path] = None):
