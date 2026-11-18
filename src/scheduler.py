@@ -75,6 +75,14 @@ def check_and_run_hourly_tasks(source: str = "ping") -> dict:
                 actions_taken.append(f"error_snapshot_eth_{e}")
 
             try:
+                from src.ibit_collector import run_ibit_snapshot
+                run_ibit_snapshot(label=label, auto_backup=False)
+                actions_taken.append(f"snapshot_ibit_{label}")
+            except Exception as e:
+                logger.error(f"[{source}] Hourly IBIT snapshot failed: {e}")
+                actions_taken.append(f"error_snapshot_ibit_{e}")
+
+            try:
                 from src.gdrive_sync import upload_db_to_gdrive
                 upload_db_to_gdrive()
             except Exception as g_err:
@@ -124,7 +132,7 @@ def check_and_run_hourly_tasks(source: str = "ping") -> dict:
 
 
 def job_0600():
-    logger.info("Executing 06:00 scheduled snapshot for BTC & ETH (today's expiry)...")
+    logger.info("Executing 06:00 scheduled snapshot for BTC, ETH & IBIT (today's expiry)...")
     try:
         run_snapshot(label="0600", currency="BTC", auto_backup=False)
     except Exception as e:
@@ -134,6 +142,11 @@ def job_0600():
     except Exception as e:
         logger.error(f"Error in ETH 06:00 job: {e}")
     try:
+        from src.ibit_collector import run_ibit_snapshot
+        run_ibit_snapshot(label="0600", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in IBIT 06:00 job: {e}")
+    try:
         from src.gdrive_sync import upload_db_to_gdrive
         upload_db_to_gdrive()
     except Exception as e:
@@ -141,7 +154,7 @@ def job_0600():
 
 
 def job_1530():
-    logger.info("Executing 15:30 scheduled settlement & snapshot for BTC & ETH (tomorrow's expiry)...")
+    logger.info("Executing 15:30 scheduled settlement & snapshot for BTC, ETH & IBIT (tomorrow's expiry)...")
     ref_time_str = datetime.now(BKK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     # 1. Settle today's expiry
     try:
@@ -164,6 +177,11 @@ def job_1530():
         run_snapshot(label="1530", currency="ETH", auto_backup=False)
     except Exception as e:
         logger.error(f"Error in ETH 15:30 snapshot: {e}")
+    try:
+        from src.ibit_collector import run_ibit_snapshot
+        run_ibit_snapshot(label="1530", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in IBIT 15:30 snapshot: {e}")
 
     # 3. Upload all to Google Drive with archive
     try:
@@ -174,7 +192,7 @@ def job_1530():
 
 
 def job_2100():
-    logger.info("Executing 21:00 scheduled snapshot for BTC & ETH (tomorrow's expiry)...")
+    logger.info("Executing 21:00 scheduled snapshot for BTC, ETH & IBIT (tomorrow's expiry)...")
     try:
         run_snapshot(label="2100", currency="BTC", auto_backup=False)
     except Exception as e:
@@ -183,6 +201,11 @@ def job_2100():
         run_snapshot(label="2100", currency="ETH", auto_backup=False)
     except Exception as e:
         logger.error(f"Error in ETH 21:00 job: {e}")
+    try:
+        from src.ibit_collector import run_ibit_snapshot
+        run_ibit_snapshot(label="2100", auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in IBIT 21:00 job: {e}")
     try:
         from src.gdrive_sync import upload_db_to_gdrive
         upload_db_to_gdrive()
@@ -202,7 +225,7 @@ def job_hourly():
         return
 
     label = f"hourly_{hour:02d}00"
-    logger.info(f"Executing hourly scheduled snapshot ({label}) for BTC & ETH...")
+    logger.info(f"Executing hourly scheduled snapshot ({label}) for BTC, ETH & IBIT...")
     try:
         run_snapshot(label=label, currency="BTC", auto_backup=False)
     except Exception as e:
@@ -211,6 +234,11 @@ def job_hourly():
         run_snapshot(label=label, currency="ETH", auto_backup=False)
     except Exception as e:
         logger.error(f"Error in ETH hourly snapshot ({label}): {e}")
+    try:
+        from src.ibit_collector import run_ibit_snapshot
+        run_ibit_snapshot(label=label, auto_backup=False)
+    except Exception as e:
+        logger.error(f"Error in IBIT hourly snapshot ({label}): {e}")
     try:
         from src.gdrive_sync import upload_db_to_gdrive
         upload_db_to_gdrive()
@@ -231,12 +259,18 @@ def init_scheduler():
 
 
 def trigger_manual(action: str = "snapshot", currency: str = "ALL") -> dict:
-    """Manually trigger either a snapshot or settlement right now (for BTC, ETH, or ALL)."""
-    target_currencies = ["BTC", "ETH"] if currency.upper() == "ALL" else [currency.upper()]
+    """Manually trigger either a snapshot or settlement right now (for BTC, ETH, IBIT, or ALL)."""
+    curr_upper = currency.upper()
+    if curr_upper == "ALL":
+        target_currencies = ["BTC", "ETH", "IBIT"]
+    else:
+        target_currencies = [curr_upper]
     results = {}
 
     if action == "settle":
         for curr in target_currencies:
+            if curr == "IBIT":
+                continue  # US options settle on expiration dates via Cboe/OCC
             try:
                 results[curr] = run_settlement(currency=curr)
             except Exception as e:
@@ -251,10 +285,17 @@ def trigger_manual(action: str = "snapshot", currency: str = "ALL") -> dict:
         now_bkk = datetime.now(BKK_TZ)
         label = f"manual_{now_bkk.strftime('%H%M')}"
         for curr in target_currencies:
-            try:
-                results[curr] = run_snapshot(label=label, currency=curr, auto_backup=False)
-            except Exception as e:
-                results[curr] = {"status": "error", "error": str(e)}
+            if curr == "IBIT":
+                try:
+                    from src.ibit_collector import run_ibit_snapshot
+                    results["IBIT"] = run_ibit_snapshot(label=label, auto_backup=False)
+                except Exception as e:
+                    results["IBIT"] = {"status": "error", "error": str(e)}
+            else:
+                try:
+                    results[curr] = run_snapshot(label=label, currency=curr, auto_backup=False)
+                except Exception as e:
+                    results[curr] = {"status": "error", "error": str(e)}
         try:
             from src.gdrive_sync import upload_db_to_gdrive
             upload_db_to_gdrive()
