@@ -8,12 +8,14 @@ RAW_DIR = DATA_DIR / "raw"
 LOGS_DIR = DATA_DIR / "logs"
 DB_PATH = DATA_DIR / "btc_pinning.db"
 ETH_DB_PATH = DATA_DIR / "eth_pinning.db"
+IBIT_DB_PATH = DATA_DIR / "ibit_pinning.db"
 
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 BKK_TZ = ZoneInfo("Asia/Bangkok")
 DERIBIT_API_BASE = "https://www.deribit.com/api/v2/public"
+CBOE_IBIT_URL = "https://cdn-api.cboe.com/api/global/delayed_quotes/options/IBIT.json"
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
 # Schedules in Asia/Bangkok
